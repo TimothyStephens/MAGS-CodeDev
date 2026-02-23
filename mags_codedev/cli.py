@@ -18,7 +18,7 @@ from mags_codedev.state import FunctionState
 from mags_codedev.graph import build_function_graph
 from mags_codedev.utils.db import init_db, is_function_built, mark_function_built, get_token_summary
 from mags_codedev.utils.git_ops import create_parallel_worktree, merge_and_cleanup_worktree
-from mags_codedev.utils.config_parser import load_config, get_llm
+from mags_codedev.utils.config_parser import load_config, get_llm, get_reviewer_llms
 from mags_codedev.utils.logger import logger
 
 app = typer.Typer(
@@ -51,6 +51,44 @@ def generate_status_table(status_dict: dict) -> Table:
             str(info['iterations'])
         )
     return table
+
+def validate_config_connections(config_path: Path) -> bool:
+    """Verifies that the API keys and Models defined in config.yaml are valid and accessible."""
+    console.print(Panel("[bold cyan]Validating LLM Connections...[/bold cyan]"))
+    
+    all_passed = True
+    roles = ["coder", "tester", "log_checker"]
+    
+    # Check primary agents
+    for role in roles:
+        try:
+            llm = get_llm(role, config_path)
+            console.print(f"Checking [bold]{role}[/bold] ({llm.model_name})...", end=" ")
+            # Send a minimal token request to verify access
+            llm.invoke([HumanMessage(content="Test")])
+            console.print("[green]OK[/green]")
+        except Exception as e:
+            console.print("[red]FAILED[/red]")
+            console.print(f"  [red]Error: {e}[/red]")
+            all_passed = False
+
+    # Check reviewers
+    try:
+        reviewers = get_reviewer_llms(config_path)
+        for i, llm in enumerate(reviewers):
+            try:
+                console.print(f"Checking [bold]Reviewer {i+1}[/bold] ({llm.model_name})...", end=" ")
+                llm.invoke([HumanMessage(content="Test")])
+                console.print("[green]OK[/green]")
+            except Exception as e:
+                console.print("[red]FAILED[/red]")
+                console.print(f"  [red]Error: {e}[/red]")
+                all_passed = False
+    except Exception as e:
+        console.print(f"[red]Error loading reviewers: {e}[/red]")
+        all_passed = False
+
+    return all_passed
 
 # -------------------------------------------------------------------
 # ASYNC WORKER: Processes a single function through LangGraph
@@ -423,11 +461,20 @@ def build(
     ),
     config_path: Path = typer.Option(
         "config.yaml", "--config", "-c", help="Path to the configuration YAML file.", exists=True, file_okay=True, dir_okay=False, readable=True, resolve_path=True
+    ),
+    skip_validation: bool = typer.Option(
+        False, "--skip-validation", help="Skip the pre-build connection check."
     )
 ):
     """Build all pending functions in manifest.json using parallel multi-agent LangGraphs."""
     console.print(Panel("[bold magenta]Starting Multi-Agent Build Process...[/bold magenta]"))
     
+    if not skip_validation:
+        if not validate_config_connections(config_path):
+            console.print("[bold red]Validation failed. Aborting build.[/bold red]")
+            console.print("Use --skip-validation to force execution if you believe this is an error.")
+            raise typer.Exit(1)
+
     if not manifest_path.exists():
         console.print("[red]Error: manifest.json not found. Run `mags-codedev init` first.[/red]")
         raise typer.Exit(1)
@@ -593,6 +640,89 @@ def tokens():
     
     console.print(table)
 
+
+@app.command(name="list-models")
+def list_models(
+    config_path: Path = typer.Option(
+        "config.yaml", "--config", "-c", help="Path to the configuration YAML file.", exists=True, file_okay=True, dir_okay=False, readable=True, resolve_path=True
+    )
+):
+    """List available models from the configured providers (OpenAI, Google, etc.)."""
+    config = load_config(config_path)
+    api_keys = config.get("api_keys", {})
+    
+    table = Table(title="Available Models", show_header=True, header_style="bold cyan")
+    table.add_column("Provider", style="green")
+    table.add_column("Model ID", style="yellow")
+
+    # 1. OpenAI
+    if api_keys.get("openai"):
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=api_keys["openai"])
+            # List models
+            models = client.models.list()
+            # Filter for chat models to reduce noise
+            gpt_models = [m.id for m in models.data if "gpt" in m.id]
+            gpt_models.sort()
+            for m in gpt_models:
+                table.add_row("OpenAI", m)
+        except Exception as e:
+            table.add_row("OpenAI", f"[red]Error: {e}[/red]")
+
+    # 2. Google (Gemini)
+    if api_keys.get("gemini"):
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=api_keys["gemini"])
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    name = m.name.replace("models/", "")
+                    table.add_row("Google", name)
+        except Exception as e:
+            table.add_row("Google", f"[red]Error: {e}[/red]")
+
+    # 3. Anthropic
+    if api_keys.get("anthropic"):
+        # Anthropic does not support listing models via API yet.
+        # We provide a static list of known recent models.
+        known_models = [
+            "claude-3-5-sonnet-20240620",
+            "claude-3-opus-20240229",
+            "claude-3-sonnet-20240229",
+            "claude-3-haiku-20240307"
+        ]
+        for m in known_models:
+            table.add_row("Anthropic (Static)", m)
+
+    # 4. Custom / Local (e.g. Ollama)
+    # Scan config for custom_openai providers to find base_urls
+    custom_urls = set()
+    models_config = config.get("models", {})
+    
+    # Check roles
+    for role in ["coder", "tester", "log_checker", "chat"]:
+        m_cfg = models_config.get(role, {})
+        if m_cfg.get("provider") == "custom_openai" and m_cfg.get("base_url"):
+            custom_urls.add(m_cfg.get("base_url"))
+            
+    # Check reviewers list
+    for r_cfg in models_config.get("reviewers", []):
+        if r_cfg.get("provider") == "custom_openai" and r_cfg.get("base_url"):
+            custom_urls.add(r_cfg.get("base_url"))
+
+    for url in custom_urls:
+        try:
+            from openai import OpenAI
+            # Use dummy key for local
+            client = OpenAI(base_url=url, api_key="dummy")
+            models = client.models.list()
+            for m in models.data:
+                table.add_row(f"Custom ({url})", m.id)
+        except Exception as e:
+            table.add_row(f"Custom ({url})", f"[red]Error: {e}[/red]")
+
+    console.print(table)
 
 @app.command()
 def clean(
