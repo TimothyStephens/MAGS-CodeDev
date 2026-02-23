@@ -1,4 +1,4 @@
-from langchain.agents.tool_calling import create_tool_calling_agent
+from langchain.agents import create_agent
 from langchain.agents.agent_executor import AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.memory import ConversationBufferMemory
@@ -56,6 +56,6 @@ def start_chat_repl(config_path: Path):
         ("placeholder", "{agent_scratchpad}"),
     ])
     
-    agent = create_tool_calling_agent(llm, tools, prompt)
+    agent = create_agent(llm, tools, prompt)
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
     return AgentExecutor(agent=agent, tools=tools, verbose=verbose_chat, memory=memory)

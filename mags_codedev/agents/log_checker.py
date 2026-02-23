@@ -1,3 +1,4 @@
+import json
 from langchain_core.prompts import ChatPromptTemplate
 from mags_codedev.state import FunctionState
 from mags_codedev.utils.config_parser import get_llm
@@ -17,13 +18,18 @@ def log_checker_node(state: FunctionState) -> dict:
     config_path = state["config_path"]
     llm = get_llm(role="log_checker", config_path=config_path)
     
-    system_prompt = """You are a Senior Diagnostic Engineer.
-    Read the following code, test traceback, and linter warnings.
-
-    First, on a single line, classify the error's primary location. Is it in the 'SOURCE_CODE' or the 'TEST_CODE'? Respond with only one of those two strings.
-
-    Then, on subsequent lines, explain EXACTLY why the code failed and provide a brief, actionable strategy for the Coder or Tester to fix it.
-    Keep your summary under 5 sentences."""
+    system_prompt = """You are a Senior Diagnostic Engineer. Your output MUST be a valid JSON object.
+    Read the code, test traceback, and linter warnings.
+    
+    Output a JSON object with two keys:
+    1. "location": A string, either "SOURCE_CODE" or "TEST_CODE".
+    2. "summary": A string explaining why the code failed and providing a brief, actionable strategy for the Coder or Tester to fix it (under 5 sentences).
+    
+    Example:
+    {
+      "location": "SOURCE_CODE",
+      "summary": "The function fails because it does not handle division by zero. Add a check at the beginning of the function to validate the divisor."
+    }"""
 
     human_template = """
     Code:
@@ -51,20 +57,22 @@ def log_checker_node(state: FunctionState) -> dict:
         "lint_results": state.get('lint_results', 'No linting errors.')
     })
     
-    # Parse the response to extract the location and summary
-    response_content = response.content
-    lines = response_content.strip().split('\n')
-    error_location = "SOURCE_CODE"  # Default to source code if classification fails
-    error_summary = response_content  # Fallback to the full response
-
-    if len(lines) > 1:
-        first_line = lines[0].strip().upper()
-        if "TEST_CODE" in first_line:
-            error_location = "TEST_CODE"
-            error_summary = "\n".join(lines[1:]).strip()
-        elif "SOURCE_CODE" in first_line:
-            error_summary = "\n".join(lines[1:]).strip()
-
+    # Parse the JSON response with robust fallback
+    response_content = response.content.strip()
+    if "```json" in response_content:
+        response_content = response_content.split("```json")[1].split("```").strip()
+    
+    try:
+        data = json.loads(response_content)
+        error_location = data.get("location", "SOURCE_CODE").upper()
+        if error_location not in ["SOURCE_CODE", "TEST_CODE"]:
+            error_location = "SOURCE_CODE" # Default if invalid value
+        error_summary = data.get("summary", "No summary provided.")
+    except (json.JSONDecodeError, AttributeError):
+        # Fallback for models that fail to produce valid JSON.
+        error_location = "SOURCE_CODE"
+        error_summary = response_content
+        
     # Log token usage
     try:
         usage = response.response_metadata.get("token_usage", {})
