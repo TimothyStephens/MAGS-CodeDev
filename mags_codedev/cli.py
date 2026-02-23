@@ -277,7 +277,7 @@ models:
             f.write(default_config)
         console.print(f"[green]Created default {config_path}. Please update your API keys.[/green]")
 
-    console.print("[bold green]✓ Initialization complete. Edit manifest.json, then run `mags build`.[/bold green]")
+    console.print("[bold green]✓ Initialization complete. Edit manifest.json, then run `mags-codedev build`.[/bold green]")
 
 
 @app.command()
@@ -293,7 +293,7 @@ def build(
     console.print(Panel("[bold magenta]Starting Multi-Agent Build Process...[/bold magenta]"))
     
     if not manifest_path.exists():
-        console.print("[red]Error: manifest.json not found. Run `mags init` first.[/red]")
+        console.print("[red]Error: manifest.json not found. Run `mags-codedev init` first.[/red]")
         raise typer.Exit(1)
         
     with open(manifest_path, "r") as f:

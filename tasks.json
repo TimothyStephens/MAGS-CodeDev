@@ -1,0 +1,41 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "mags-codedev: Build Project",
+      "type": "shell",
+      "command": "mags-codedev build",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      }
+    },
+    {
+      "label": "mags-codedev: Initialize Project",
+      "type": "shell",
+      "command": "mags-codedev init",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      }
+    },
+    {
+      "label": "mags-codedev: Chat with Codebase",
+      "type": "shell",
+      "command": "mags-codedev chat"
+    },
+    {
+      "label": "mags-codedev: Show Token Usage",
+      "type": "shell",
+      "command": "mags-codedev tokens",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    }
+  ]
+}

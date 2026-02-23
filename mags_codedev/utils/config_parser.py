@@ -22,8 +22,9 @@ def load_config(config_path: Path = Path("config.yaml")) -> dict:
             with open(vscode_path, "r") as f:
                 vscode_settings = json.load(f)
                 # Parse "mags.api_keys.openai" -> config['api_keys']['openai']
+                # Parse "mags-codedev.api_keys.openai" -> config['api_keys']['openai']
                 for k, v in vscode_settings.items():
-                    if k.startswith("mags."):
+                    if k.startswith("mags-codedev.") or k.startswith("mags."):
                         parts = k.split(".")[1:]
                         d = config
                         for part in parts[:-1]:
