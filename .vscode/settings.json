@@ -1,0 +1,16 @@
+{
+    "python.formatting.provider": "black",
+    "python.linting.enabled": true,
+    
+    // MAGs-CodeDev Workspace Overrides
+    // These will take precedence over config.yaml to keep your local environment secure.
+    "mags.api_keys.openai": "sk-...",
+    "mags.api_keys.anthropic": "sk-ant-...",
+    "mags.api_keys.gemini": "AIza...",
+    
+    // You can also override models directly from the workspace
+    "mags.models.coder.provider": "openai",
+    "mags.models.coder.model": "gpt-4o",
+    
+    "mags.settings.max_parallel_functions": 4
+}

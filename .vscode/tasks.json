@@ -1,0 +1,80 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "MAGs: 🚀 Init Workspace",
+            "type": "shell",
+            "command": "mags init",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "MAGs: 🏗️ Build Manifest",
+            "type": "shell",
+            "command": "mags build",
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "MAGs: 🐛 Debug Error",
+            "type": "shell",
+            "command": "mags debug \"${input:errorMessage}\"",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "MAGs: 💬 Chat with Codebase",
+            "type": "shell",
+            "command": "mags chat",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "MAGs: 🪙 View Token Usage",
+            "type": "shell",
+            "command": "mags tokens",
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "shared"
+            }
+        }
+    ],
+    "inputs": [
+        {
+            "id": "errorMessage",
+            "type": "promptString",
+            "description": "Paste the error trace or bug description you want the agents to fix:",
+            "default": "NameError: name 'x' is not defined"
+        }
+    ]
+}

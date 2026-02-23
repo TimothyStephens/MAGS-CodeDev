@@ -1,0 +1,7 @@
+FROM python:3.11-slim
+
+# Install common testing and linting tools
+RUN pip install --no-cache-dir pytest flake8 mypy
+
+# Set the working directory
+WORKDIR /app
