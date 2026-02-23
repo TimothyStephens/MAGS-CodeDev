@@ -1,7 +1,5 @@
-from langchain.agents import create_tool_calling_agent
-from langchain.agents.agent_executor import AgentExecutor
-from langchain_core.prompts import ChatPromptTemplate
-from langchain.memory.buffer import ConversationBufferMemory
+from langgraph.prebuilt import create_react_agent
+from langgraph.checkpoint.memory import MemorySaver
 import os
 from pathlib import Path
 from langchain_core.tools import tool
@@ -42,20 +40,16 @@ def write_file(filepath: str, content: str) -> str:
         return f"Error writing file: {e}"
 
 def start_chat_repl(config_path: Path):
-    """Initializes and returns the Chat Agent executor for the CLI."""
+    """Initializes and returns the Chat Agent graph for the CLI."""
     config = load_config(config_path)
-    verbose_chat = config.get("settings", {}).get("verbose_chat", False)
     llm = get_llm(role="chat", config_path=config_path)
 
     tools = [read_file, write_file]
     
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are the MAGs-CodeDev interactive assistant. You help the user debug and refine their project. You can read and write files directly."),
-        ("placeholder", "{chat_history}"),
-        ("human", "{input}"),
-        ("placeholder", "{agent_scratchpad}"),
-    ])
+    system_message = "You are the MAGs-CodeDev interactive assistant. You help the user debug and refine their project. You can read and write files directly."
     
-    agent = create_tool_calling_agent(llm, tools, prompt)
-    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-    return AgentExecutor(agent=agent, tools=tools, verbose=verbose_chat, memory=memory)
+    # MemorySaver replaces ConversationBufferMemory for persisting state between turns
+    memory = MemorySaver()
+    
+    # create_react_agent builds a StateGraph pre-configured for tool calling
+    return create_react_agent(llm, tools, state_modifier=system_message, checkpointer=memory)

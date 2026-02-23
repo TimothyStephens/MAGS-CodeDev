@@ -395,7 +395,10 @@ def chat(
     from mags_codedev.agents.chat_agent import start_chat_repl
     
     console.print("[bold blue]Entering Chat Mode (Type 'exit' to quit)...[/bold blue]")
-    agent_executor = start_chat_repl(config_path=config_path)
+    agent_graph = start_chat_repl(config_path=config_path)
+    
+    # Thread ID is required by LangGraph checkpointers to maintain conversation history
+    config = {"configurable": {"thread_id": "cli-session"}}
     
     while True:
         try:
@@ -405,11 +408,14 @@ def chat(
             
             logger.info(f"Chat Input: {user_input}")
             
-            # Use invoke to execute the agent tool loop
-            response = agent_executor.invoke({"input": user_input})
+            # Use invoke to execute the agent graph. Input is a list of messages.
+            response = agent_graph.invoke({"messages": [("user", user_input)]}, config=config)
             
-            logger.info(f"Chat Final Answer: {response['output']}")
-            console.print(f"\n[blue]Agent>[/blue] {response['output']}\n")
+            # The response is the final state. We extract the content of the last message (the AI's reply).
+            final_answer = response["messages"][-1].content
+            
+            logger.info(f"Chat Final Answer: {final_answer}")
+            console.print(f"\n[blue]Agent>[/blue] {final_answer}\n")
             
         except (KeyboardInterrupt, EOFError):
             break
