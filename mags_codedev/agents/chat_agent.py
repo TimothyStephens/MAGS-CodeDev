@@ -1,11 +1,11 @@
-from langchain.agents.tool_calling_agent import create_tool_calling_agent
+from langchain.agents.tool_calling import create_tool_calling_agent
 from langchain.agents.agent_executor import AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.memory import ConversationBufferMemory
 import os
 from pathlib import Path
 from langchain_core.tools import tool
-from mags_codedev.utils.config_parser import get_llm
+from mags_codedev.utils.config_parser import get_llm, load_config
 
 @tool
 def read_file(filepath: str) -> str:
@@ -43,7 +43,10 @@ def write_file(filepath: str, content: str) -> str:
 
 def start_chat_repl(config_path: Path):
     """Initializes and returns the Chat Agent executor for the CLI."""
+    config = load_config(config_path)
+    verbose_chat = config.get("settings", {}).get("verbose_chat", False)
     llm = get_llm(role="chat", config_path=config_path)
+
     tools = [read_file, write_file]
     
     prompt = ChatPromptTemplate.from_messages([
@@ -55,4 +58,4 @@ def start_chat_repl(config_path: Path):
     
     agent = create_tool_calling_agent(llm, tools, prompt)
     memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-    return AgentExecutor(agent=agent, tools=tools, verbose=False, memory=memory)
+    return AgentExecutor(agent=agent, tools=tools, verbose=verbose_chat, memory=memory)

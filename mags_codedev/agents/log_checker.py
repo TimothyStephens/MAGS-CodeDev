@@ -7,7 +7,7 @@ from mags_codedev.utils.db import log_token_usage
 def log_checker_node(state: FunctionState) -> dict:
     """Analyzes raw test/lint logs and outputs a concise bug-fix strategy."""
     # If the docker_test_node already determined tests passed, skip analysis
-    if "FAILED" not in state.get("test_results", "").upper() and not state.get("lint_results"):
+    if "FAILED" not in state.get("test_results", "").upper() and "ERROR" not in state.get("test_results", "").upper() and not state.get("lint_results"):
         return {
             "error_summary": "",
             "test_results": "", # Consume the passing logs
