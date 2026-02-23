@@ -205,6 +205,13 @@ def init(
     logger.info("Starting workspace initialization.")
     
     # 1. Config (Created first to enable AI)
+    # Check for config in package directory first if using default path
+    package_config = Path(__file__).parent / "config.yaml"
+    if str(config_path) == "config.yaml" and not config_path.exists() and package_config.exists():
+        console.print(f"[cyan]Using configuration found in package directory: {package_config}[/cyan]")
+        logger.info(f"Using package configuration: {package_config}")
+        config_path = package_config
+
     if not config_path.exists():
         default_config = """api_keys:
   openai: "YOUR_KEY_HERE"
