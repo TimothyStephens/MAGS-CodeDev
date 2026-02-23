@@ -1,6 +1,7 @@
-from langchain.agents import create_agent, AgentExecutor
+from langchain.agents import create_agent
+from langchain.agents.agent_executor import AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.memory import ConversationBufferMemory
+from langchain.memory.buffer import ConversationBufferMemory
 import os
 from pathlib import Path
 from langchain_core.tools import tool

@@ -78,5 +78,11 @@ def docker_test_node(state: FunctionState) -> dict:
 def linter_node(state: FunctionState) -> dict:
     """LangGraph node: Executes flake8 and mypy in an isolated Docker container."""
     target_file = Path(state["spec"]["location"]).as_posix()
+    # The command is structured to run mypy even if flake8 fails.
     logs = _run_in_container(state, f"flake8 {target_file}; mypy {target_file}")
+
+    # If the output is empty (flake8 success) or just the mypy success message,
+    # return an empty string to prevent the log_checker from running on clean code.
+    if not logs.strip() or logs.strip().startswith("Success: no issues found"):
+        return {"lint_results": ""}
     return {"lint_results": logs}
