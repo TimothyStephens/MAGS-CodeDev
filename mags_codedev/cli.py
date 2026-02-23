@@ -11,7 +11,7 @@ from rich.panel import Panel
 from pathlib import Path
 from rich.live import Live
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 # Import our MAGs-CodeDev modules
 from mags_codedev.state import FunctionState
@@ -195,64 +195,15 @@ def init(
     ),
     config_path: Path = typer.Option(
         "config.yaml", "--config", "-c", help="Path to create the configuration YAML file."
+    ),
+    interactive: bool = typer.Option(
+        True, "--interactive/--no-interactive", help="Use AI to interactively design the project structure."
     )
 ):
     """Initialize the workspace, create AGENT.md, and intelligently build manifest.json."""
     console.print(Panel("[bold cyan]Initializing MAGs-CodeDev Workspace...[/bold cyan]"))
     
-    # 1. Interactive Setup
-    project_name = typer.prompt("Project Name", default=os.path.basename(os.getcwd()))
-    language = typer.prompt("Programming Language", default="Python")
-
-    # 2. Gitignore
-    gitignore_content = "\n# MAGS-CodeDev\n*.log\n*.sqlite3\nmags_cache.db\nconfig.yaml\n.worktree_*/\n"
-    if os.path.exists(".gitignore"):
-        with open(".gitignore", "r") as f:
-            current_content = f.read()
-        if "mags_cache.db" not in current_content:
-            with open(".gitignore", "a") as f:
-                f.write(gitignore_content)
-            console.print("[green]Updated .gitignore[/green]")
-    else:
-        with open(".gitignore", "w") as f:
-            f.write(gitignore_content)
-        console.print("[green]Created .gitignore[/green]")
-
-    # 3. Database
-    init_db()
-    console.print("[green]Initialized SQLite Database[/green]")
-    
-    # 4. AGENT.md
-    if not os.path.exists("AGENT.md"):
-        with open("AGENT.md", "w") as f:
-            f.write(f"# Agent Instructions for {project_name}\n\n")
-            f.write(f"Language: {language}\n")
-            f.write("Follow standard coding conventions and best practices.\n")
-            if language.lower() == "python":
-                f.write("Use PEP 8 standards. Include type hints.\n")
-        console.print("[green]Created AGENT.md[/green]")
-
-    # 5. requirements.txt
-    if not os.path.exists("requirements.txt"):
-        Path("requirements.txt").touch()
-        console.print("[green]Created empty requirements.txt for project dependencies.[/green]")
-
-    # 6. Manifest
-    # Prompt the user to set up their manifest manually for now
-    if not manifest_path.exists():
-        dummy_manifest = {
-            "calculate_discount": {
-                "purpose": "Calculates a final price given a base price and a discount percentage.",
-                "input": "price: float, discount: float",
-                "output": "float",
-                "location": "src/pricing.py"
-            }
-        }
-        with open(manifest_path, "w") as f:
-            json.dump(dummy_manifest, f, indent=4)
-        console.print(f"[green]Created dummy {manifest_path}. Please edit this to define your functions.[/green]")
-
-    # 7. Config
+    # 1. Config (Created first to enable AI)
     if not config_path.exists():
         default_config = """api_keys:
   openai: "YOUR_KEY_HERE"
@@ -277,7 +228,157 @@ models:
             f.write(default_config)
         console.print(f"[green]Created default {config_path}. Please update your API keys.[/green]")
 
-    console.print("[bold green]✓ Initialization complete. Edit manifest.json, then run `mags-codedev build`.[/bold green]")
+    # 2. Gitignore
+    gitignore_content = "\n# MAGS-CodeDev\n*.log\n*.sqlite3\nmags_cache.db\nconfig.yaml\n.worktree_*/\n"
+    if os.path.exists(".gitignore"):
+        with open(".gitignore", "r") as f:
+            current_content = f.read()
+        if "mags_cache.db" not in current_content:
+            with open(".gitignore", "a") as f:
+                f.write(gitignore_content)
+            console.print("[green]Updated .gitignore[/green]")
+    else:
+        with open(".gitignore", "w") as f:
+            f.write(gitignore_content)
+        console.print("[green]Created .gitignore[/green]")
+
+    # 3. Database
+    init_db()
+    console.print("[green]Initialized SQLite Database[/green]")
+    
+    # 4. requirements.txt
+    if not os.path.exists("requirements.txt"):
+        Path("requirements.txt").touch()
+        console.print("[green]Created empty requirements.txt for project dependencies.[/green]")
+
+    # 5. Interactive Setup (Manifest & AGENT.md)
+    manifest_created = False
+    agent_md_created = False
+
+    if interactive:
+        # Check for API Key
+        config = load_config(config_path)
+        api_key = config.get("api_keys", {}).get("openai")
+        
+        if not api_key or "YOUR_KEY" in api_key:
+            console.print("[yellow]OpenAI API key missing in config.yaml.[/yellow]")
+            user_key = typer.prompt("Enter OpenAI API Key for AI setup (leave empty to skip AI)", default="", show_default=False, hide_input=True)
+            if user_key:
+                # Update config file
+                with open(config_path, "r") as f:
+                    content = f.read()
+                with open(config_path, "w") as f:
+                    f.write(content.replace("YOUR_KEY_HERE", user_key))
+                console.print("[green]Updated config.yaml with API key.[/green]")
+            else:
+                interactive = False
+
+    if interactive:
+        try:
+            logger.info("Starting AI Architect Mode initialization.")
+            llm = get_llm("chat", config_path)
+            
+            console.print(Panel("[bold green]AI Architect Mode[/bold green]\nDescribe your project idea, and I will generate the manifest and agent instructions."))
+            
+            messages = [
+                SystemMessage(content="""You are a Senior Software Architect. 
+Your goal is to help the user define a software project.
+1. Ask clarifying questions if the user's request is vague.
+2. Propose a file structure and a list of functions.
+3. Once the user agrees, output the final configuration in a specific JSON block.
+
+The JSON block must look EXACTLY like this:
+```json_output
+{
+    "agent_md": "The content for AGENT.md...",
+    "manifest": {
+        "function_name": {
+            "purpose": "...",
+            "input": "...",
+            "output": "...",
+            "location": "src/..."
+        }
+    }
+}
+```
+Do not output the JSON block until the user explicitly confirms the plan.
+""")
+            ]
+            
+            while True:
+                user_input = typer.prompt("You")
+                if user_input.lower() in ["exit", "quit", "skip"]:
+                    logger.info("User exited AI Architect mode manually.")
+                    console.print("[yellow]Exiting AI Architect mode.[/yellow]")
+                    break
+                
+                logger.info(f"AI Architect User Input: {user_input}")
+                messages.append(HumanMessage(content=user_input))
+                
+                with console.status("Architect is thinking...", spinner="dots"):
+                    response = llm.invoke(messages)
+                
+                content = response.content
+                messages.append(AIMessage(content=content))
+                logger.debug(f"AI Architect Response Content: {content}")
+                
+                if "```json_output" in content:
+                    # Extract JSON
+                    try:
+                        json_str = content.split("```json_output")[1].split("```")[0].strip()
+                        data = json.loads(json_str)
+                        
+                        # Write AGENT.md
+                        with open("AGENT.md", "w") as f:
+                            f.write(data.get("agent_md", "# Agent Instructions"))
+                        console.print("[green]Generated AGENT.md[/green]")
+                        agent_md_created = True
+                        
+                        # Write manifest.json
+                        with open(manifest_path, "w") as f:
+                            json.dump(data.get("manifest", {}), f, indent=4)
+                        console.print(f"[green]Generated {manifest_path}[/green]")
+                        manifest_created = True
+                        
+                        logger.info("AI Architect successfully created project configuration.")
+                        console.print("[bold green]Project structure defined![/bold green]")
+                        break
+                    except Exception as e:
+                        logger.error(f"Failed to parse AI Architect JSON output: {e}")
+                        console.print(f"[red]Failed to parse AI output: {e}[/red]")
+                        console.print("[blue]Architect:[/blue] " + content.replace("```json_output", ""))
+                else:
+                    console.print(f"[blue]Architect:[/blue] {content}")
+
+        except Exception as e:
+            logger.error(f"AI Architect Mode encountered an error: {e}")
+            console.print(f"[red]AI Setup Error: {e}[/red]")
+            console.print("[yellow]Falling back to manual setup.[/yellow]")
+
+    # 6. Fallback / Manual Creation
+    if not agent_md_created and not os.path.exists("AGENT.md"):
+        project_name = os.path.basename(os.getcwd())
+        with open("AGENT.md", "w") as f:
+            f.write(f"# Agent Instructions for {project_name}\n\n")
+            f.write("Language: Python\n")
+            f.write("Follow standard coding conventions and best practices.\n")
+            f.write("Use PEP 8 standards. Include type hints.\n")
+        console.print("[green]Created default AGENT.md[/green]")
+
+    if not manifest_created and not manifest_path.exists():
+        dummy_manifest = {
+            "calculate_discount": {
+                "purpose": "Calculates a final price given a base price and a discount percentage.",
+                "input": "price: float, discount: float",
+                "output": "float",
+                "location": "src/pricing.py"
+            }
+        }
+        with open(manifest_path, "w") as f:
+            json.dump(dummy_manifest, f, indent=4)
+        console.print(f"[green]Created dummy {manifest_path}. Please edit this to define your functions.[/green]")
+
+    console.print("[bold green]✓ Initialization complete. Run `mags-codedev build` to start coding.[/bold green]")
 
 
 @app.command()
