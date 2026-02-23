@@ -55,6 +55,7 @@ def generate_status_table(status_dict: dict) -> Table:
 def validate_config_connections(config_path: Path) -> bool:
     """Verifies that the API keys and Models defined in config.yaml are valid and accessible."""
     console.print(Panel("[bold cyan]Validating LLM Connections...[/bold cyan]"))
+    logger.info("Starting validation of LLM connections.")
     
     all_passed = True
     roles = ["coder", "tester", "log_checker"]
@@ -67,9 +68,11 @@ def validate_config_connections(config_path: Path) -> bool:
             # Send a minimal token request to verify access
             llm.invoke([HumanMessage(content="Test")])
             console.print("[green]OK[/green]")
+            logger.info(f"Connection verified for {role} ({llm.model_name}).")
         except Exception as e:
             console.print("[red]FAILED[/red]")
             console.print(f"  [red]Error: {e}[/red]")
+            logger.error(f"Connection failed for {role}: {e}")
             all_passed = False
 
     # Check reviewers
@@ -80,12 +83,15 @@ def validate_config_connections(config_path: Path) -> bool:
                 console.print(f"Checking [bold]Reviewer {i+1}[/bold] ({llm.model_name})...", end=" ")
                 llm.invoke([HumanMessage(content="Test")])
                 console.print("[green]OK[/green]")
+                logger.info(f"Connection verified for Reviewer {i+1} ({llm.model_name}).")
             except Exception as e:
                 console.print("[red]FAILED[/red]")
                 console.print(f"  [red]Error: {e}[/red]")
+                logger.error(f"Connection failed for Reviewer {i+1}: {e}")
                 all_passed = False
     except Exception as e:
         console.print(f"[red]Error loading reviewers: {e}[/red]")
+        logger.error(f"Error loading reviewers: {e}")
         all_passed = False
 
     return all_passed
@@ -243,37 +249,20 @@ def init(
     logger.info("Starting workspace initialization.")
     
     # 1. Config (Created first to enable AI)
-    # Check for config in package directory first if using default path
-    package_config = Path(__file__).parent / "config.yaml"
-    if str(config_path) == "config.yaml" and not config_path.exists() and package_config.exists():
-        console.print(f"[cyan]Using configuration found in package directory: {package_config}[/cyan]")
-        logger.info(f"Using package configuration: {package_config}")
-        config_path = package_config
-
     if not config_path.exists():
-        default_config = """api_keys:
-  openai: "YOUR_KEY_HERE"
-models:
-  coder:
-    provider: "openai"
-    model: "gpt-4o"
-  tester:
-    provider: "openai"
-    model: "gpt-4o"
-  log_checker:
-    provider: "openai"
-    model: "gpt-4o"
-  chat:
-    provider: "openai"
-    model: "gpt-4o"
-  reviewers:
-    - provider: "openai"
-      model: "gpt-4o"
-"""
-        with open(config_path, "w") as f:
-            f.write(default_config)
-        console.print(f"[green]Created default {config_path}. Please update your API keys.[/green]")
-        logger.info(f"Created default configuration file: {config_path}")
+        # The file does not exist. Create it from the package template.
+        package_template_path = Path(__file__).parent / "config.yaml"
+        if package_template_path.exists():
+            # Ensure parent directory exists for the destination
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(package_template_path, config_path)
+            console.print(f"[green]Created configuration file at {config_path} from package template.[/green]")
+            logger.info(f"Copied package config template to {config_path}.")
+        else:
+            # This case should ideally not happen in a packaged application
+            console.print(f"[red]Error: Package config template not found at {package_template_path}. Cannot create config.[/red]")
+            logger.error(f"Package config template not found at {package_template_path}.")
+            raise typer.Exit(1)
 
     # 2. Gitignore
     gitignore_content = "\n# MAGS-CodeDev\n*.log\n*.sqlite3\nmags_cache.db\nconfig.yaml\n.worktree_*/\n"
@@ -321,6 +310,7 @@ models:
                 with open(config_path, "w") as f:
                     f.write(content.replace("YOUR_KEY_HERE", user_key))
                 console.print("[green]Updated config.yaml with API key.[/green]")
+                logger.info("Updated config.yaml with provided OpenAI API key.")
             else:
                 interactive = False
 
@@ -369,15 +359,18 @@ Do not output the JSON block until the user explicitly confirms the plan.
                         messages.pop() # Remove AI response
                         messages.pop() # Remove User input
                         console.print("[yellow]Undid last interaction.[/yellow]")
+                        logger.info("User performed undo in AI Architect mode.")
                         if len(messages) > 1 and isinstance(messages[-1], AIMessage):
                             console.print(f"[blue]Architect (Previous):[/blue] {messages[-1].content}")
                     else:
                         console.print("[red]Nothing to undo.[/red]")
+                        logger.info("User attempted undo with empty history.")
                     continue
                 
                 if cmd == "restart":
                     messages = [system_message]
                     console.print("[yellow]Restarting AI Architect session...[/yellow]")
+                    logger.info("User restarted AI Architect session.")
                     continue
                 
                 logger.info(f"AI Architect User Input: {user_input}")
