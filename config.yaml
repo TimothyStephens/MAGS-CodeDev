@@ -10,7 +10,7 @@ models:
   # PRIMARY CODER
   # -------------------------------------------------------------------
   # The heavy lifter. Use your strongest model with the largest token 
-  # allowance here (e.g., gpt-4o, claude-3.5-sonnet, gemini-1.5-pro).
+  # allowance here (e.g., gpt-4o, claude-3.5-sonnet, gemini-2.5-pro).
   coder:
     provider: "openai"
     model: "gpt-4o"
@@ -24,7 +24,7 @@ models:
   
   log_checker:
     provider: "google"
-    model: "gemini-1.5-pro-latest"
+    model: "gemini-2.5-pro-latest"
     
   chat:
     provider: "openai"
@@ -40,7 +40,7 @@ models:
       model: "gpt-4o"
       
     - provider: "google"
-      model: "gemini-1.5-pro-latest"
+      model: "gemini-2.5-pro-latest"
       
     - provider: "anthropic"
       model: "claude-3-5-sonnet-20240620"

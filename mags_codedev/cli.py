@@ -262,21 +262,15 @@ def init(
     console.print(Panel("[bold cyan]Initializing MAGs-CodeDev Workspace...[/bold cyan]"))
     logger.info("Starting workspace initialization.")
     
-    # 1. Config (Created first to enable AI)
-    if not config_path.exists():
-        # The file does not exist. Create it from the package template.
-        package_template_path = Path(__file__).parent / "config.yaml"
-        if package_template_path.exists():
-            # Ensure parent directory exists for the destination
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(package_template_path, config_path)
-            console.print(f"[green]Created configuration file at {config_path} from package template.[/green]")
-            logger.info(f"Copied package config template to {config_path}.")
-        else:
-            # This case should ideally not happen in a packaged application
-            console.print(f"[red]Error: Package config template not found at {package_template_path}. Cannot create config.[/red]")
-            logger.error(f"Package config template not found at {package_template_path}.")
-            raise typer.Exit(1)
+    # 1. Config Resolution
+    # We no longer automatically create a local config.yaml.
+    # We resolve to the package config unless the user explicitly provided a path that exists,
+    # or if they want to override it (which they can do by manually creating one later).
+    
+    # If the user provided a specific path that doesn't exist, resolve_config_path will handle the fallback logic
+    # or we can just let the subsequent commands use the resolved path.
+    resolved_config_path = resolve_config_path(config_path)
+    console.print(f"[cyan]Using configuration: {resolved_config_path}[/cyan]")
 
     # 2. Gitignore
     gitignore_content = "\n# MAGS-CodeDev\n*.log\n*.sqlite3\nmags_cache.db\nconfig.yaml\n.worktree_*/\n"
@@ -311,7 +305,7 @@ def init(
 
     if interactive:
         # Check for API Key
-        config = load_config(config_path)
+        config = load_config(resolved_config_path)
         chat_config = config.get("models", {}).get("chat", {})
         chat_provider = chat_config.get("provider", "openai")
         
@@ -328,23 +322,31 @@ def init(
             console.print(f"[yellow]{required_key_name.capitalize()} API key missing or is a placeholder in config.yaml.[/yellow]")
             user_key = typer.prompt(f"Enter {required_key_name.capitalize()} API Key for AI setup (leave empty to skip AI)", default="", show_default=False, hide_input=True)
             if user_key:
-                # Safely update the YAML file
-                with open(config_path, 'r') as f:
-                    config_data = yaml.safe_load(f)
+                # If we are using the package config, we should NOT modify it directly.
+                # Instead, we should copy it to the local directory and modify that.
+                if resolved_config_path.parent == Path(__file__).parent:
+                    console.print("[yellow]Using package configuration. Creating a local copy to save API key...[/yellow]")
+                    shutil.copy2(resolved_config_path, "config.yaml")
+                    resolved_config_path = Path("config.yaml")
+                    logger.info("Created local config.yaml from package template to save API key.")
+
+                # Safely update the (now potentially local) YAML file
+                with open(resolved_config_path, 'r') as f:
+                    config_data = yaml.safe_load(f) or {}
                 
                 config_data.setdefault('api_keys', {})[required_key_name] = user_key
 
-                with open(config_path, 'w') as f:
+                with open(resolved_config_path, 'w') as f:
                     yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
-                console.print("[green]Updated config.yaml with API key.[/green]")
-                logger.info(f"Updated config.yaml with provided {required_key_name} API key.")
+                console.print(f"[green]Updated {resolved_config_path} with API key.[/green]")
+                logger.info(f"Updated {resolved_config_path} with provided {required_key_name} API key.")
             else:
                 interactive = False
 
     if interactive:
         try:
             logger.info("Starting AI Architect Mode initialization.")
-            llm = get_llm("chat", config_path)
+            llm = get_llm("chat", resolved_config_path)
             
             console.print(Panel("[bold green]AI Architect Mode[/bold green]\nDescribe your project idea, and I will generate the manifest and agent instructions.\n\n[bold]Commands:[/bold]\n- [bold]undo[/bold]: Remove the last interaction.\n- [bold]restart[/bold]: Clear history and start over.\n- [bold]exit[/bold]: Quit AI mode."))
             
