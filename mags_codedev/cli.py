@@ -697,12 +697,15 @@ def list_models(
     # 2. Google (Gemini)
     if api_keys.get("gemini"):
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=api_keys["gemini"])
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    name = m.name.replace("models/", "")
-                    table.add_row("Google", name)
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=api_keys["gemini"])
+                for m in genai.list_models():
+                    if 'generateContent' in m.supported_generation_methods:
+                        name = m.name.replace("models/", "")
+                        table.add_row("Google", name)
+            except ImportError:
+                table.add_row("Google", "[yellow]Skipped: 'google-generativeai' not installed[/yellow]")
         except Exception as e:
             table.add_row("Google", f"[red]Error: {e}[/red]")
 
