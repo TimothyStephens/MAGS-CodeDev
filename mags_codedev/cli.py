@@ -260,7 +260,7 @@ def init(
 ):
     """Initialize the workspace, create AGENT.md, and intelligently build manifest.json."""
     console.print(Panel("[bold cyan]Initializing MAGs-CodeDev Workspace...[/bold cyan]"))
-    logger.debug("Starting workspace initialization.")
+    logger.info("Starting workspace initialization.")
     
     # 1. Config (Created first to enable AI)
     if not config_path.exists():
@@ -271,7 +271,7 @@ def init(
             config_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(package_template_path, config_path)
             console.print(f"[green]Created configuration file at {config_path} from package template.[/green]")
-            logger.debug(f"Copied package config template to {config_path}.")
+            logger.info(f"Copied package config template to {config_path}.")
         else:
             # This case should ideally not happen in a packaged application
             console.print(f"[red]Error: Package config template not found at {package_template_path}. Cannot create config.[/red]")
@@ -287,23 +287,23 @@ def init(
             with open(".gitignore", "a") as f:
                 f.write(gitignore_content)
             console.print("[green]Updated .gitignore[/green]")
-            logger.debug("Updated .gitignore with MAGS-CodeDev patterns.")
+            logger.info("Updated .gitignore with MAGS-CodeDev patterns.")
     else:
         with open(".gitignore", "w") as f:
             f.write(gitignore_content)
         console.print("[green]Created .gitignore[/green]")
-        logger.debug("Created .gitignore file.")
+        logger.info("Created .gitignore file.")
 
     # 3. Database
     init_db()
     console.print("[green]Initialized SQLite Database[/green]")
-    logger.debug("Initialized SQLite database.")
+    logger.info("Initialized SQLite database.")
     
     # 4. requirements.txt
     if not os.path.exists("requirements.txt"):
         Path("requirements.txt").touch()
         console.print("[green]Created empty requirements.txt for project dependencies.[/green]")
-        logger.debug("Created empty requirements.txt.")
+        logger.info("Created empty requirements.txt.")
 
     # 5. Interactive Setup (Manifest & AGENT.md)
     manifest_created = False
@@ -337,13 +337,13 @@ def init(
                 with open(config_path, 'w') as f:
                     yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
                 console.print("[green]Updated config.yaml with API key.[/green]")
-                logger.debug(f"Updated config.yaml with provided {required_key_name} API key.")
+                logger.info(f"Updated config.yaml with provided {required_key_name} API key.")
             else:
                 interactive = False
 
     if interactive:
         try:
-            logger.debug("Starting AI Architect Mode initialization.")
+            logger.info("Starting AI Architect Mode initialization.")
             llm = get_llm("chat", config_path)
             
             console.print(Panel("[bold green]AI Architect Mode[/bold green]\nDescribe your project idea, and I will generate the manifest and agent instructions.\n\n[bold]Commands:[/bold]\n- [bold]undo[/bold]: Remove the last interaction.\n- [bold]restart[/bold]: Clear history and start over.\n- [bold]exit[/bold]: Quit AI mode."))
@@ -377,7 +377,7 @@ Do not output the JSON block until the user explicitly confirms the plan.
                 cmd = user_input.lower().strip()
                 
                 if cmd in ["exit", "quit", "skip"]:
-                    logger.debug("User exited AI Architect mode manually.")
+                    logger.info("User exited AI Architect mode manually.")
                     console.print("[yellow]Exiting AI Architect mode.[/yellow]")
                     break
                 
@@ -386,21 +386,21 @@ Do not output the JSON block until the user explicitly confirms the plan.
                         messages.pop() # Remove AI response
                         messages.pop() # Remove User input
                         console.print("[yellow]Undid last interaction.[/yellow]")
-                        logger.debug("User performed undo in AI Architect mode.")
+                        logger.info("User performed undo in AI Architect mode.")
                         if len(messages) > 1 and isinstance(messages[-1], AIMessage):
                             console.print(f"[blue]Architect (Previous):[/blue] {messages[-1].content}")
                     else:
                         console.print("[red]Nothing to undo.[/red]")
-                        logger.debug("User attempted undo with empty history.")
+                        logger.info("User attempted undo with empty history.")
                     continue
                 
                 if cmd == "restart":
                     messages = [system_message]
                     console.print("[yellow]Restarting AI Architect session...[/yellow]")
-                    logger.debug("User restarted AI Architect session.")
+                    logger.info("User restarted AI Architect session.")
                     continue
                 
-                logger.debug(f"AI Architect User Input: {user_input}")
+                logger.info(f"AI Architect User Input: {user_input}")
                 messages.append(HumanMessage(content=user_input))
                 
                 with console.status("Architect is thinking...", spinner="dots"):
@@ -420,17 +420,17 @@ Do not output the JSON block until the user explicitly confirms the plan.
                         with open("AGENT.md", "w") as f:
                             f.write(data.get("agent_md", "# Agent Instructions"))
                         console.print("[green]Generated AGENT.md[/green]")
-                        logger.debug("Generated AGENT.md from AI response.")
+                        logger.info("Generated AGENT.md from AI response.")
                         agent_md_created = True
                         
                         # Write manifest.json
                         with open(manifest_path, "w") as f:
                             json.dump(data.get("manifest", {}), f, indent=4)
                         console.print(f"[green]Generated {manifest_path}[/green]")
-                        logger.debug(f"Generated {manifest_path} from AI response.")
+                        logger.info(f"Generated {manifest_path} from AI response.")
                         manifest_created = True
                         
-                        logger.debug("AI Architect successfully created project configuration.")
+                        logger.info("AI Architect successfully created project configuration.")
                         console.print("[bold green]Project structure defined![/bold green]")
                         break
                     except Exception as e:
@@ -454,7 +454,7 @@ Do not output the JSON block until the user explicitly confirms the plan.
             f.write("Follow standard coding conventions and best practices.\n")
             f.write("Use PEP 8 standards. Include type hints.\n")
         console.print("[green]Created default AGENT.md[/green]")
-        logger.debug("Created default AGENT.md.")
+        logger.info("Created default AGENT.md.")
 
     if not manifest_created and not manifest_path.exists():
         dummy_manifest = {
@@ -468,10 +468,10 @@ Do not output the JSON block until the user explicitly confirms the plan.
         with open(manifest_path, "w") as f:
             json.dump(dummy_manifest, f, indent=4)
         console.print(f"[green]Created dummy {manifest_path}. Please edit this to define your functions.[/green]")
-        logger.debug(f"Created dummy manifest file at {manifest_path}.")
+        logger.info(f"Created dummy manifest file at {manifest_path}.")
 
     console.print("[bold green]✓ Initialization complete. Run `mags-codedev build` to start coding.[/bold green]")
-    logger.debug("Initialization complete.")
+    logger.info("Initialization complete.")
 
 
 @app.command()
