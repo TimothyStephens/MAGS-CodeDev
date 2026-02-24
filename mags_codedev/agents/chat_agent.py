@@ -54,4 +54,8 @@ def start_chat_repl(config_path: Path, system_message_override: str = None):
     memory = MemorySaver()
     
     # create_react_agent builds a StateGraph pre-configured for tool calling
-    return create_react_agent(llm, tools, state_modifier=system_message, checkpointer=memory)
+    try:
+        return create_react_agent(llm, tools, state_modifier=system_message, checkpointer=memory)
+    except TypeError:
+        # Fallback for older versions of langgraph using messages_modifier
+        return create_react_agent(llm, tools, messages_modifier=system_message, checkpointer=memory)
