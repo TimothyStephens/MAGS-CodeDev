@@ -54,16 +54,23 @@ def generate_status_table(status_dict: dict) -> Table:
 
 def resolve_config_path(config_path: Path) -> Path:
     """Resolves the configuration path, falling back to the package default if local is missing."""
-    if config_path.exists():
-        return config_path
+    # 1. If the user provided a custom path (anything other than the default 'config.yaml')
+    #    we trust them and use it (or fail if missing).
+    if str(config_path) != "config.yaml":
+        if config_path.exists():
+            return config_path
+        console.print(f"[red]Error: Specified config file not found at '{config_path}'[/red]")
+        raise typer.Exit(1)
+
+    # 2. Default path requested. Prioritize package/dev locations over CWD.
+    here = Path(__file__).resolve().parent
     
-    # Check if we are looking for the default config.yaml
-    if config_path.name == "config.yaml":
-        package_config = Path(__file__).parent / "config.yaml"
-        if package_config.exists():
-            logger.debug(f"Local config not found. Using package config: {package_config}")
-            return package_config
-            
+    # Check locations in order of preference
+    for candidate in [here / "config.yaml", here.parent / "config.yaml"]:
+        if candidate.exists():
+            logger.debug(f"Resolved configuration to: {candidate}")
+            return candidate
+
     return config_path
 
 def validate_config_connections(config_path: Path) -> bool:
@@ -324,14 +331,6 @@ def init(
             console.print(f"[yellow]{required_key_name.capitalize()} API key missing or is a placeholder in config.yaml.[/yellow]")
             user_key = typer.prompt(f"Enter {required_key_name.capitalize()} API Key for AI setup (leave empty to skip AI)", default="", show_default=False, hide_input=True)
             if user_key:
-                # If we are using the package config, we should NOT modify it directly.
-                # Instead, we should copy it to the local directory and modify that.
-                if resolved_config_path.parent == Path(__file__).parent:
-                    console.print("[yellow]Using package configuration. Creating a local copy to save API key...[/yellow]")
-                    shutil.copy2(resolved_config_path, "config.yaml")
-                    resolved_config_path = Path("config.yaml")
-                    logger.info("Created local config.yaml from package template to save API key.")
-
                 # Safely update the (now potentially local) YAML file
                 with open(resolved_config_path, 'r') as f:
                     config_data = yaml.safe_load(f) or {}
