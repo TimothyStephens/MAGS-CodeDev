@@ -52,10 +52,24 @@ def generate_status_table(status_dict: dict) -> Table:
         )
     return table
 
+def resolve_config_path(config_path: Path) -> Path:
+    """Resolves the configuration path, falling back to the package default if local is missing."""
+    if config_path.exists():
+        return config_path
+    
+    # Check if we are looking for the default config.yaml
+    if config_path.name == "config.yaml":
+        package_config = Path(__file__).parent / "config.yaml"
+        if package_config.exists():
+            logger.debug(f"Local config not found. Using package config: {package_config}")
+            return package_config
+            
+    return config_path
+
 def validate_config_connections(config_path: Path) -> bool:
     """Verifies that the API keys and Models defined in config.yaml are valid and accessible."""
     console.print(Panel("[bold cyan]Validating LLM Connections...[/bold cyan]"))
-    logger.info("Starting validation of LLM connections.")
+    logger.debug("Starting validation of LLM connections.")
     
     all_passed = True
     roles = ["coder", "tester", "log_checker"]
@@ -68,7 +82,7 @@ def validate_config_connections(config_path: Path) -> bool:
             # Send a minimal token request to verify access
             llm.invoke([HumanMessage(content="Test")])
             console.print("[green]OK[/green]")
-            logger.info(f"Connection verified for {role} ({llm.model_name}).")
+            logger.debug(f"Connection verified for {role} ({llm.model_name}).")
         except Exception as e:
             console.print("[red]FAILED[/red]")
             console.print(f"  [red]Error: {e}[/red]")
@@ -83,7 +97,7 @@ def validate_config_connections(config_path: Path) -> bool:
                 console.print(f"Checking [bold]Reviewer {i+1}[/bold] ({llm.model_name})...", end=" ")
                 llm.invoke([HumanMessage(content="Test")])
                 console.print("[green]OK[/green]")
-                logger.info(f"Connection verified for Reviewer {i+1} ({llm.model_name}).")
+                logger.debug(f"Connection verified for Reviewer {i+1} ({llm.model_name}).")
             except Exception as e:
                 console.print("[red]FAILED[/red]")
                 console.print(f"  [red]Error: {e}[/red]")
@@ -246,7 +260,7 @@ def init(
 ):
     """Initialize the workspace, create AGENT.md, and intelligently build manifest.json."""
     console.print(Panel("[bold cyan]Initializing MAGs-CodeDev Workspace...[/bold cyan]"))
-    logger.info("Starting workspace initialization.")
+    logger.debug("Starting workspace initialization.")
     
     # 1. Config (Created first to enable AI)
     if not config_path.exists():
@@ -257,7 +271,7 @@ def init(
             config_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(package_template_path, config_path)
             console.print(f"[green]Created configuration file at {config_path} from package template.[/green]")
-            logger.info(f"Copied package config template to {config_path}.")
+            logger.debug(f"Copied package config template to {config_path}.")
         else:
             # This case should ideally not happen in a packaged application
             console.print(f"[red]Error: Package config template not found at {package_template_path}. Cannot create config.[/red]")
@@ -273,23 +287,23 @@ def init(
             with open(".gitignore", "a") as f:
                 f.write(gitignore_content)
             console.print("[green]Updated .gitignore[/green]")
-            logger.info("Updated .gitignore with MAGS-CodeDev patterns.")
+            logger.debug("Updated .gitignore with MAGS-CodeDev patterns.")
     else:
         with open(".gitignore", "w") as f:
             f.write(gitignore_content)
         console.print("[green]Created .gitignore[/green]")
-        logger.info("Created .gitignore file.")
+        logger.debug("Created .gitignore file.")
 
     # 3. Database
     init_db()
     console.print("[green]Initialized SQLite Database[/green]")
-    logger.info("Initialized SQLite database.")
+    logger.debug("Initialized SQLite database.")
     
     # 4. requirements.txt
     if not os.path.exists("requirements.txt"):
         Path("requirements.txt").touch()
         console.print("[green]Created empty requirements.txt for project dependencies.[/green]")
-        logger.info("Created empty requirements.txt.")
+        logger.debug("Created empty requirements.txt.")
 
     # 5. Interactive Setup (Manifest & AGENT.md)
     manifest_created = False
@@ -298,25 +312,38 @@ def init(
     if interactive:
         # Check for API Key
         config = load_config(config_path)
-        api_key = config.get("api_keys", {}).get("openai")
+        chat_config = config.get("models", {}).get("chat", {})
+        chat_provider = chat_config.get("provider", "openai")
         
-        if not api_key or "YOUR_KEY" in api_key:
-            console.print("[yellow]OpenAI API key missing in config.yaml.[/yellow]")
-            user_key = typer.prompt("Enter OpenAI API Key for AI setup (leave empty to skip AI)", default="", show_default=False, hide_input=True)
+        key_name_map = {
+            "openai": "openai",
+            "google": "gemini",
+            "anthropic": "anthropic"
+        }
+        required_key_name = key_name_map.get(chat_provider, "openai")
+        api_key = config.get("api_keys", {}).get(required_key_name)
+        
+        # A simple check for placeholder keys
+        if not api_key or "..." in api_key or "YOUR_KEY" in api_key:
+            console.print(f"[yellow]{required_key_name.capitalize()} API key missing or is a placeholder in config.yaml.[/yellow]")
+            user_key = typer.prompt(f"Enter {required_key_name.capitalize()} API Key for AI setup (leave empty to skip AI)", default="", show_default=False, hide_input=True)
             if user_key:
-                # Update config file
-                with open(config_path, "r") as f:
-                    content = f.read()
-                with open(config_path, "w") as f:
-                    f.write(content.replace("YOUR_KEY_HERE", user_key))
+                # Safely update the YAML file
+                with open(config_path, 'r') as f:
+                    config_data = yaml.safe_load(f)
+                
+                config_data.setdefault('api_keys', {})[required_key_name] = user_key
+
+                with open(config_path, 'w') as f:
+                    yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
                 console.print("[green]Updated config.yaml with API key.[/green]")
-                logger.info("Updated config.yaml with provided OpenAI API key.")
+                logger.debug(f"Updated config.yaml with provided {required_key_name} API key.")
             else:
                 interactive = False
 
     if interactive:
         try:
-            logger.info("Starting AI Architect Mode initialization.")
+            logger.debug("Starting AI Architect Mode initialization.")
             llm = get_llm("chat", config_path)
             
             console.print(Panel("[bold green]AI Architect Mode[/bold green]\nDescribe your project idea, and I will generate the manifest and agent instructions.\n\n[bold]Commands:[/bold]\n- [bold]undo[/bold]: Remove the last interaction.\n- [bold]restart[/bold]: Clear history and start over.\n- [bold]exit[/bold]: Quit AI mode."))
@@ -350,7 +377,7 @@ Do not output the JSON block until the user explicitly confirms the plan.
                 cmd = user_input.lower().strip()
                 
                 if cmd in ["exit", "quit", "skip"]:
-                    logger.info("User exited AI Architect mode manually.")
+                    logger.debug("User exited AI Architect mode manually.")
                     console.print("[yellow]Exiting AI Architect mode.[/yellow]")
                     break
                 
@@ -359,21 +386,21 @@ Do not output the JSON block until the user explicitly confirms the plan.
                         messages.pop() # Remove AI response
                         messages.pop() # Remove User input
                         console.print("[yellow]Undid last interaction.[/yellow]")
-                        logger.info("User performed undo in AI Architect mode.")
+                        logger.debug("User performed undo in AI Architect mode.")
                         if len(messages) > 1 and isinstance(messages[-1], AIMessage):
                             console.print(f"[blue]Architect (Previous):[/blue] {messages[-1].content}")
                     else:
                         console.print("[red]Nothing to undo.[/red]")
-                        logger.info("User attempted undo with empty history.")
+                        logger.debug("User attempted undo with empty history.")
                     continue
                 
                 if cmd == "restart":
                     messages = [system_message]
                     console.print("[yellow]Restarting AI Architect session...[/yellow]")
-                    logger.info("User restarted AI Architect session.")
+                    logger.debug("User restarted AI Architect session.")
                     continue
                 
-                logger.info(f"AI Architect User Input: {user_input}")
+                logger.debug(f"AI Architect User Input: {user_input}")
                 messages.append(HumanMessage(content=user_input))
                 
                 with console.status("Architect is thinking...", spinner="dots"):
@@ -393,17 +420,17 @@ Do not output the JSON block until the user explicitly confirms the plan.
                         with open("AGENT.md", "w") as f:
                             f.write(data.get("agent_md", "# Agent Instructions"))
                         console.print("[green]Generated AGENT.md[/green]")
-                        logger.info("Generated AGENT.md from AI response.")
+                        logger.debug("Generated AGENT.md from AI response.")
                         agent_md_created = True
                         
                         # Write manifest.json
                         with open(manifest_path, "w") as f:
                             json.dump(data.get("manifest", {}), f, indent=4)
                         console.print(f"[green]Generated {manifest_path}[/green]")
-                        logger.info(f"Generated {manifest_path} from AI response.")
+                        logger.debug(f"Generated {manifest_path} from AI response.")
                         manifest_created = True
                         
-                        logger.info("AI Architect successfully created project configuration.")
+                        logger.debug("AI Architect successfully created project configuration.")
                         console.print("[bold green]Project structure defined![/bold green]")
                         break
                     except Exception as e:
@@ -427,7 +454,7 @@ Do not output the JSON block until the user explicitly confirms the plan.
             f.write("Follow standard coding conventions and best practices.\n")
             f.write("Use PEP 8 standards. Include type hints.\n")
         console.print("[green]Created default AGENT.md[/green]")
-        logger.info("Created default AGENT.md.")
+        logger.debug("Created default AGENT.md.")
 
     if not manifest_created and not manifest_path.exists():
         dummy_manifest = {
@@ -441,10 +468,10 @@ Do not output the JSON block until the user explicitly confirms the plan.
         with open(manifest_path, "w") as f:
             json.dump(dummy_manifest, f, indent=4)
         console.print(f"[green]Created dummy {manifest_path}. Please edit this to define your functions.[/green]")
-        logger.info(f"Created dummy manifest file at {manifest_path}.")
+        logger.debug(f"Created dummy manifest file at {manifest_path}.")
 
     console.print("[bold green]✓ Initialization complete. Run `mags-codedev build` to start coding.[/bold green]")
-    logger.info("Initialization complete.")
+    logger.debug("Initialization complete.")
 
 
 @app.command()
@@ -453,13 +480,14 @@ def build(
         "manifest.json", "--manifest", "-m", help="Path to the manifest JSON file.", exists=True, file_okay=True, dir_okay=False, readable=True, resolve_path=True
     ),
     config_path: Path = typer.Option(
-        "config.yaml", "--config", "-c", help="Path to the configuration YAML file.", exists=True, file_okay=True, dir_okay=False, readable=True, resolve_path=True
+        "config.yaml", "--config", "-c", help="Path to the configuration YAML file.", exists=False, file_okay=True, dir_okay=False, readable=True, resolve_path=True
     ),
     skip_validation: bool = typer.Option(
         False, "--skip-validation", help="Skip the pre-build connection check."
     )
 ):
     """Build all pending functions in manifest.json using parallel multi-agent LangGraphs."""
+    config_path = resolve_config_path(config_path)
     console.print(Panel("[bold magenta]Starting Multi-Agent Build Process...[/bold magenta]"))
     
     if not skip_validation:
@@ -516,10 +544,11 @@ def debug(
         "manifest.json", "--manifest", "-m", help="Path to the manifest JSON file."
     ),
     config_path: Path = typer.Option(
-        "config.yaml", "--config", "-c", help="Path to the configuration YAML file.", exists=True, file_okay=True, dir_okay=False, readable=True, resolve_path=True
+        "config.yaml", "--config", "-c", help="Path to the configuration YAML file.", exists=False, file_okay=True, dir_okay=False, readable=True, resolve_path=True
     )
 ):
     """Pass an error trace or bug description to the LLM for automatic fixing."""
+    config_path = resolve_config_path(config_path)
     console.print(Panel(f"[bold red]Debugging Error:[/bold red]\n{error_msg}"))
     
     # Scenario A: Function name provided -> Run the Graph to fix it
@@ -564,10 +593,11 @@ def debug(
 @app.command()
 def chat(
     config_path: Path = typer.Option(
-        "config.yaml", "--config", "-c", help="Path to the configuration YAML file.", exists=True, file_okay=True, dir_okay=False, readable=True, resolve_path=True
+        "config.yaml", "--config", "-c", help="Path to the configuration YAML file.", exists=False, file_okay=True, dir_okay=False, readable=True, resolve_path=True
     )
 ):
     """Freely chat with the LLM about the codebase. Can read/write files."""
+    config_path = resolve_config_path(config_path)
     from mags_codedev.agents.chat_agent import start_chat_repl
     
     console.print("[bold blue]Entering Chat Mode (Type 'exit' to quit)...[/bold blue]")
@@ -582,7 +612,7 @@ def chat(
             if user_input.lower() in ['exit', 'quit']:
                 break
             
-            logger.info(f"Chat Input: {user_input}")
+            logger.debug(f"Chat Input: {user_input}")
             
             # Use invoke to execute the agent graph. Input is a list of messages.
             response = agent_graph.invoke({"messages": [("user", user_input)]}, config=config)
@@ -590,7 +620,7 @@ def chat(
             # The response is the final state. We extract the content of the last message (the AI's reply).
             final_answer = response["messages"][-1].content
             
-            logger.info(f"Chat Final Answer: {final_answer}")
+            logger.debug(f"Chat Final Answer: {final_answer}")
             console.print(f"\n[blue]Agent>[/blue] {final_answer}\n")
             
         except (KeyboardInterrupt, EOFError):
@@ -637,10 +667,11 @@ def tokens():
 @app.command(name="list-models")
 def list_models(
     config_path: Path = typer.Option(
-        "config.yaml", "--config", "-c", help="Path to the configuration YAML file.", exists=True, file_okay=True, dir_okay=False, readable=True, resolve_path=True
+        "config.yaml", "--config", "-c", help="Path to the configuration YAML file.", exists=False, file_okay=True, dir_okay=False, readable=True, resolve_path=True
     )
 ):
     """List available models from the configured providers (OpenAI, Google, etc.)."""
+    config_path = resolve_config_path(config_path)
     config = load_config(config_path)
     api_keys = config.get("api_keys", {})
     
