@@ -24,7 +24,7 @@ models:
   
   log_checker:
     provider: "google"
-    model: "gemini-2.5-pro-latest"
+    model: "gemini-2.5-pro"
     
   chat:
     provider: "openai"
@@ -40,7 +40,7 @@ models:
       model: "gpt-4o"
       
     - provider: "google"
-      model: "gemini-2.5-pro-latest"
+      model: "gemini-2.5-pro"
       
     - provider: "anthropic"
       model: "claude-3-5-sonnet-20240620"

@@ -271,6 +271,8 @@ def init(
     # or we can just let the subsequent commands use the resolved path.
     resolved_config_path = resolve_config_path(config_path)
     console.print(f"[cyan]Using configuration: {resolved_config_path}[/cyan]")
+    logger.info(f"Using configuration: {resolved_config_path}")
+    logger.info(f"Target manifest: {manifest_path}")
 
     # 2. Gitignore
     gitignore_content = "\n# MAGS-CodeDev\n*.log\n*.sqlite3\nmags_cache.db\nconfig.yaml\n.worktree_*/\n"
@@ -490,6 +492,8 @@ def build(
 ):
     """Build all pending functions in manifest.json using parallel multi-agent LangGraphs."""
     config_path = resolve_config_path(config_path)
+    logger.info(f"Using configuration: {config_path}")
+    logger.info(f"Using manifest: {manifest_path}")
     console.print(Panel("[bold magenta]Starting Multi-Agent Build Process...[/bold magenta]"))
     
     if not skip_validation:
@@ -551,6 +555,8 @@ def debug(
 ):
     """Pass an error trace or bug description to the LLM for automatic fixing."""
     config_path = resolve_config_path(config_path)
+    logger.info(f"Using configuration: {config_path}")
+    logger.info(f"Using manifest: {manifest_path}")
     console.print(Panel(f"[bold red]Debugging Error:[/bold red]\n{error_msg}"))
     
     # Scenario A: Function name provided -> Run the Graph to fix it
@@ -600,6 +606,7 @@ def chat(
 ):
     """Freely chat with the LLM about the codebase. Can read/write files."""
     config_path = resolve_config_path(config_path)
+    logger.info(f"Using configuration: {config_path}")
     from mags_codedev.agents.chat_agent import start_chat_repl
     
     console.print("[bold blue]Entering Chat Mode (Type 'exit' to quit)...[/bold blue]")
@@ -674,6 +681,7 @@ def list_models(
 ):
     """List available models from the configured providers (OpenAI, Google, etc.)."""
     config_path = resolve_config_path(config_path)
+    logger.info(f"Using configuration: {config_path}")
     config = load_config(config_path)
     api_keys = config.get("api_keys", {})
     
