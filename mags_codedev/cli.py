@@ -413,10 +413,18 @@ Do not output the JSON block until the user explicitly confirms the plan.
                 messages.append(AIMessage(content=content))
                 logger.debug(f"AI Architect Response Content: {content}")
                 
+                # Attempt to extract JSON from various formats (specific tag, generic json tag, or raw json)
+                json_str = None
                 if "```json_output" in content:
+                    json_str = content.split("```json_output")[1].split("```")[0].strip()
+                elif "```json" in content:
+                    json_str = content.split("```json")[1].split("```")[0].strip()
+                elif content.strip().startswith("{") and content.strip().endswith("}"):
+                    json_str = content.strip()
+
+                if json_str:
                     # Extract JSON
                     try:
-                        json_str = content.split("```json_output")[1].split("```")[0].strip()
                         data = json.loads(json_str)
                         
                         # Write AGENT.md
@@ -439,7 +447,7 @@ Do not output the JSON block until the user explicitly confirms the plan.
                     except Exception as e:
                         logger.error(f"Failed to parse AI Architect JSON output: {e}")
                         console.print(f"[red]Failed to parse AI output: {e}[/red]")
-                        console.print("[blue]Architect:[/blue] " + content.replace("```json_output", ""))
+                        console.print("[blue]Architect:[/blue] " + content)
                 else:
                     console.print(f"[blue]Architect:[/blue] {content}")
 
