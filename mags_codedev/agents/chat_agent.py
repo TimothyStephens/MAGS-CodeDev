@@ -39,14 +39,16 @@ def write_file(filepath: str, content: str) -> str:
     except Exception as e:
         return f"Error writing file: {e}"
 
-def start_chat_repl(config_path: Path):
+def start_chat_repl(config_path: Path, system_message_override: str = None):
     """Initializes and returns the Chat Agent graph for the CLI."""
     config = load_config(config_path)
     llm = get_llm(role="chat", config_path=config_path)
 
     tools = [read_file, write_file]
     
-    system_message = "You are the MAGs-CodeDev interactive assistant. You help the user debug and refine their project. You can read and write files directly."
+    default_system_message = "You are the MAGs-CodeDev interactive assistant. You help the user debug and refine their project. You can read and write files directly."
+    
+    system_message = system_message_override or default_system_message
     
     # MemorySaver replaces ConversationBufferMemory for persisting state between turns
     memory = MemorySaver()

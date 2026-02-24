@@ -1,6 +1,7 @@
 import os
 import json
 import asyncio
+import yaml
 import git
 import shutil
 import subprocess
@@ -346,115 +347,65 @@ def init(
 
     if interactive:
         try:
-            logger.info("Starting AI Architect Mode initialization.")
-            llm = get_llm("chat", resolved_config_path)
-            
-            console.print(Panel("[bold green]AI Architect Mode[/bold green]\nDescribe your project idea, and I will generate the manifest and agent instructions.\n\n[bold]Commands:[/bold]\n- [bold]undo[/bold]: Remove the last interaction.\n- [bold]restart[/bold]: Clear history and start over.\n- [bold]exit[/bold]: Quit AI mode."))
-            
-            system_message = SystemMessage(content="""You are a Senior Software Architect. 
-Your goal is to help the user define a software project.
-1. Ask clarifying questions if the user's request is vague.
-2. Propose a file structure and a list of functions.
-3. Once the user agrees, output the final configuration in a specific JSON block.
+            from mags_codedev.agents.chat_agent import start_chat_repl
+            logger.info("Starting AI Architect tool-based session.")
 
-The JSON block must look EXACTLY like this:
-```json_output
-{
-    "agent_md": "The content for AGENT.md...",
-    "manifest": {
-        "function_name": {
-            "purpose": "...",
-            "input": "...",
-            "output": "...",
-            "location": "src/..."
-        }
-    }
-}
-```
-Do not output the JSON block until the user explicitly confirms the plan.
-""")
-            messages = [system_message]
+            architect_system_prompt = f"""You are a Senior Software Architect. Your goal is to help the user define and set up a new software project from scratch.
+
+**Your Process:**
+1.  **Discuss:** Talk with the user about their project idea. Ask clarifying questions to understand the requirements, scope, and desired technologies.
+2.  **Plan:** Propose a plan that includes:
+    *   A file and directory structure.
+    *   A list of core functions or components for the manifest.
+    *   Any necessary Python dependencies for `requirements.txt`.
+    *   A brief project description for `README.md`.
+    *   Any necessary entries for `.gitignore`.
+3.  **Execute:** Once the user approves your plan, use your tools to create or modify the project files. You have the `read_file` and `write_file` tools. If a file already exists, read it first to decide if you should append or overwrite.
+
+**Key Files to Create/Modify:**
+*   `{manifest_path}`: A JSON file defining the functions to be built. This is your primary output for the build system.
+*   `AGENT.md`: A markdown file with high-level instructions for the other AI agents (e.g., language, coding standards).
+*   `requirements.txt`: Add the Python dependencies needed for the project.
+*   `README.md`: Create a basic README file for the project.
+*   `.gitignore`: Add any necessary entries.
+
+**Important Rules:**
+*   **Do not write any files until the user has approved your plan.**
+*   **Use the `write_file` tool to create/modify files directly.** Do not output file content in the chat.
+*   Start by greeting the user and asking about their project idea."""
+
+            console.print(Panel("[bold green]AI Architect Mode[/bold green]\nDescribe your project idea. The AI will ask questions and then use its tools to write `AGENT.md` and `manifest.json` for you.\n\nType 'exit' or 'quit' to end the session."))
+
+            agent_graph = start_chat_repl(config_path=resolved_config_path, system_message_override=architect_system_prompt)
+            config = {"configurable": {"thread_id": "architect-session"}}
             
             while True:
-                user_input = typer.prompt("You")
-                cmd = user_input.lower().strip()
-                
-                if cmd in ["exit", "quit", "skip"]:
-                    logger.info("User exited AI Architect mode manually.")
-                    console.print("[yellow]Exiting AI Architect mode.[/yellow]")
-                    break
-                
-                if cmd == "undo":
-                    if len(messages) >= 3:
-                        messages.pop() # Remove AI response
-                        messages.pop() # Remove User input
-                        console.print("[yellow]Undid last interaction.[/yellow]")
-                        logger.info("User performed undo in AI Architect mode.")
-                        if len(messages) > 1 and isinstance(messages[-1], AIMessage):
-                            console.print(f"[blue]Architect (Previous):[/blue] {messages[-1].content}")
-                    else:
-                        console.print("[red]Nothing to undo.[/red]")
-                        logger.info("User attempted undo with empty history.")
-                    continue
-                
-                if cmd == "restart":
-                    messages = [system_message]
-                    console.print("[yellow]Restarting AI Architect session...[/yellow]")
-                    logger.info("User restarted AI Architect session.")
-                    continue
-                
-                logger.info(f"AI Architect User Input: {user_input}")
-                messages.append(HumanMessage(content=user_input))
-                
-                with console.status("Architect is thinking...", spinner="dots"):
-                    response = llm.invoke(messages)
-                
-                content = response.content
-                messages.append(AIMessage(content=content))
-                logger.debug(f"AI Architect Response Content: {content}")
-                
-                # Attempt to extract JSON from various formats (specific tag, generic json tag, or raw json)
-                json_str = None
-                if "```json_output" in content:
-                    json_str = content.split("```json_output")[1].split("```")[0].strip()
-                elif "```json" in content:
-                    json_str = content.split("```json")[1].split("```")[0].strip()
-                elif content.strip().startswith("{") and content.strip().endswith("}"):
-                    json_str = content.strip()
-
-                if json_str:
-                    # Extract JSON
-                    try:
-                        data = json.loads(json_str)
-                        
-                        # Write AGENT.md
-                        with open("AGENT.md", "w") as f:
-                            f.write(data.get("agent_md", "# Agent Instructions"))
-                        console.print("[green]Generated AGENT.md[/green]")
-                        logger.info("Generated AGENT.md from AI response.")
-                        agent_md_created = True
-                        
-                        # Write manifest.json
-                        with open(manifest_path, "w") as f:
-                            json.dump(data.get("manifest", {}), f, indent=4)
-                        console.print(f"[green]Generated {manifest_path}[/green]")
-                        logger.info(f"Generated {manifest_path} from AI response.")
-                        manifest_created = True
-                        
-                        logger.info("AI Architect successfully created project configuration.")
-                        console.print("[bold green]Project structure defined![/bold green]")
+                try:
+                    user_input = console.input("[bold green]You>[/bold green] ")
+                    if user_input.lower() in ['exit', 'quit']:
+                        logger.info("User exited AI Architect mode.")
                         break
-                    except Exception as e:
-                        logger.error(f"Failed to parse AI Architect JSON output: {e}")
-                        console.print(f"[red]Failed to parse AI output: {e}[/red]")
-                        console.print("[blue]Architect:[/blue] " + content)
-                else:
-                    console.print(f"[blue]Architect:[/blue] {content}")
+                    
+                    logger.debug(f"Architect Input: {user_input}")
+                    
+                    response = agent_graph.invoke({"messages": [("user", user_input)]}, config=config)
+                    final_answer = response["messages"][-1].content
+                    
+                    logger.debug(f"Architect Final Answer: {final_answer}")
+                    console.print(f"\n[blue]Architect>[/blue] {final_answer}\n")
+
+                except (KeyboardInterrupt, EOFError):
+                    break
+            console.print("\n[blue]Exiting AI Architect mode.[/blue]")
 
         except Exception as e:
             logger.error(f"AI Architect Mode encountered an error: {e}")
             console.print(f"[red]AI Setup Error: {e}[/red]")
             console.print("[yellow]Falling back to manual setup.[/yellow]")
+        
+        # After the interactive session, check if the files were created by the agent
+        manifest_created = manifest_path.exists()
+        agent_md_created = Path("AGENT.md").exists()
 
     # 6. Fallback / Manual Creation
     if not agent_md_created and not os.path.exists("AGENT.md"):
