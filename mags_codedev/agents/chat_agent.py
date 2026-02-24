@@ -56,6 +56,8 @@ def start_chat_repl(config_path: Path, system_message_override: str = None):
     # create_react_agent builds a StateGraph pre-configured for tool calling
     try:
         return create_react_agent(llm, tools, state_modifier=system_message, checkpointer=memory)
-    except TypeError:
-        # Fallback for older versions of langgraph using messages_modifier
-        return create_react_agent(llm, tools, messages_modifier=system_message, checkpointer=memory)
+    except TypeError as e:
+        # Only fallback if the error is specifically about state_modifier not being accepted
+        if "state_modifier" in str(e):
+            return create_react_agent(llm, tools, messages_modifier=system_message, checkpointer=memory)
+        raise e
