@@ -28,3 +28,4 @@ class FunctionState(TypedDict):
     iteration_count: int          # Tracks how many times we've looped back to the Coder
     max_iterations: int           # Hard stop to prevent infinite agent loops
     status: str                   # 'in_progress', 'success', 'failed'
+    log_filepath: str             # Path to the function-specific log file

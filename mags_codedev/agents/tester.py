@@ -1,13 +1,21 @@
+import logging
 from langchain_core.prompts import ChatPromptTemplate
 from mags_codedev.state import FunctionState
 from mags_codedev.utils.config_parser import get_llm
 from mags_codedev.utils.logger import logger
-from mags_codedev.utils.db import log_token_usage
 
 def tester_node(state: FunctionState) -> dict:
     """Writes comprehensive unit tests using pytest."""
     config_path = state["config_path"]
     llm = get_llm(role="tester", config_path=config_path)
+    model_name = getattr(llm, 'model_name', getattr(llm, 'model', 'unknown'))
+    
+    if state.get("log_filepath"):
+        import os
+        log_hash = os.path.basename(state["log_filepath"]).replace(".log", "")
+        func_logger = logging.getLogger(f"mags.func.{log_hash}")
+    else:
+        func_logger = logger
     
     # Check if we are in a fix cycle for tests
     is_fix = bool(state.get("error_summary")) and state.get("error_location") == "TEST_CODE"
@@ -57,30 +65,25 @@ Generated Code to Test:
         ("human", human_template)
     ])
     
-    logger.info(f"Tester: Sending prompt for '{state['function_name']}'.")
-    logger.debug(f"Tester Prompt:\n{prompt.format(**invoke_params)}")
+    func_logger.info(f"Tester: Sending prompt for '{state['function_name']}'.")
+    func_logger.debug(f"Tester Prompt:\n{prompt.format(**invoke_params)}")
 
     chain = prompt | llm
     response = chain.invoke(invoke_params)
-    
-    # Log token usage
-    try:
-        usage = response.response_metadata.get("token_usage", {})
-        in_tokens = usage.get("input_tokens", 0)
-        out_tokens = usage.get("output_tokens", 0)
-        log_token_usage(
-            role="tester",
-            model=llm.model_name,
-            in_tokens=in_tokens,
-            out_tokens=out_tokens
-        )
-        logger.debug(f"Tester Token Usage: In={in_tokens}, Out={out_tokens}")
-    except Exception as e:
-        logger.warning(f"Could not log token usage for tester: {e}")
 
-    logger.debug(f"Tester Response:\n{response.content}")
+    func_logger.debug(f"Tester Response:\n{response.content}")
+
+    # Handle potential list content from LLM (e.g. text blocks + tool calls)
+    content = response.content
+    if isinstance(content, list):
+        content = "".join(
+            block if isinstance(block, str) else 
+            block.get("text", "") if isinstance(block, dict) else 
+            getattr(block, "text", str(block))
+            for block in content
+        )
 
     return {
-        "tests": response.content.strip(),
+        "tests": str(content).strip(),
         "error_summary": "" # Clear the error summary after addressing it
     }

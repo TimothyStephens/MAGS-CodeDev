@@ -1,14 +1,34 @@
+import logging
 from langchain_core.prompts import ChatPromptTemplate
 from mags_codedev.state import FunctionState
 # (Assuming a helper function that loads the configured LLM for a specific role)
 from mags_codedev.utils.config_parser import get_llm
 from mags_codedev.utils.logger import logger
-from mags_codedev.utils.db import log_token_usage
 
 def coder_node(state: FunctionState) -> dict:
     """Generates or updates the code based on specifications and feedback."""
     config_path = state["config_path"]
     llm = get_llm(role="coder", config_path=config_path)
+    model_name = getattr(llm, 'model_name', getattr(llm, 'model', 'unknown'))
+    
+    # Use function-specific logger if available
+    if state.get("log_filepath"):
+        # Re-acquire the logger based on the hash logic used in cli.py
+        # Since we don't have the hash here easily without re-hashing, we can rely on the fact that
+        # we set up the logger with a specific name in cli.py.
+        # However, passing the logger name in state would be cleaner.
+        # For now, let's just use the global logger which is what was requested to be changed.
+        # Actually, to write to the specific file, we need that specific logger.
+        # Let's assume we update the agents to use a logger passed in state or derived.
+        # Since we didn't add logger object to state (can't pickle easily), we rely on the file handler setup in the process.
+        # But wait, `logger` imported above is the global one.
+        # We need to get the logger for this function.
+        # Let's assume we use the hash from the log filename to get the logger name.
+        import os
+        log_hash = os.path.basename(state["log_filepath"]).replace(".log", "")
+        func_logger = logging.getLogger(f"mags.func.{log_hash}")
+    else:
+        func_logger = logger
     
     # Determine context based on whether this is a first run or a fix
     is_fix = state.get("iteration_count", 0) > 0
@@ -51,8 +71,8 @@ def coder_node(state: FunctionState) -> dict:
         ("human", human_template)
     ])
     
-    logger.info(f"Coder: Sending prompt for '{state['function_name']}' (iteration {state.get('iteration_count', 0) + 1}).")
-    logger.debug(f"Coder Prompt:\n{prompt.format(function_name=state['function_name'], spec=str(state['spec']), prompt_narrative=prompt_narrative, feedback=feedback)}")
+    func_logger.info(f"Coder: Sending prompt for '{state['function_name']}' (iteration {state.get('iteration_count', 0) + 1}).")
+    func_logger.debug(f"Coder Prompt:\n{prompt.format(function_name=state['function_name'], spec=str(state['spec']), prompt_narrative=prompt_narrative, feedback=feedback)}")
 
     chain = prompt | llm
     response = chain.invoke({
@@ -61,26 +81,21 @@ def coder_node(state: FunctionState) -> dict:
         "prompt_narrative": prompt_narrative,
         "feedback": feedback
     })
-    
-    # Log token usage
-    try:
-        usage = response.response_metadata.get("token_usage", {})
-        in_tokens = usage.get("input_tokens", 0)
-        out_tokens = usage.get("output_tokens", 0)
-        log_token_usage(
-            role="coder",
-            model=llm.model_name,
-            in_tokens=in_tokens,
-            out_tokens=out_tokens
-        )
-        logger.debug(f"Coder Token Usage: In={in_tokens}, Out={out_tokens}")
-    except Exception as e:
-        logger.warning(f"Could not log token usage for coder: {e}")
 
-    logger.debug(f"Coder Response:\n{response.content}")
+    func_logger.debug(f"Coder Response:\n{response.content}")
+
+    # Handle potential list content from LLM (e.g. text blocks + tool calls)
+    content = response.content
+    if isinstance(content, list):
+        content = "".join(
+            block if isinstance(block, str) else 
+            block.get("text", "") if isinstance(block, dict) else 
+            getattr(block, "text", str(block))
+            for block in content
+        )
 
     return {
-        "code": response.content.strip(),
+        "code": str(content).strip(),
         # Increment the iteration counter
         "iteration_count": state.get("iteration_count", 0) + 1,
         # Clear previous feedback

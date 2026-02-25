@@ -1,9 +1,12 @@
 from langgraph.prebuilt import create_react_agent
 from langgraph.checkpoint.memory import MemorySaver
 import os
+import pprint
 from pathlib import Path
 from langchain_core.tools import tool
+from langchain_core.messages import SystemMessage
 from mags_codedev.utils.config_parser import get_llm, load_config
+from mags_codedev.utils.db import TokenLoggingCallbackHandler
 
 @tool
 def read_file(filepath: str) -> str:
@@ -39,10 +42,14 @@ def write_file(filepath: str, content: str) -> str:
     except Exception as e:
         return f"Error writing file: {e}"
 
-def start_chat_repl(config_path: Path, system_message_override: str = None):
+def start_chat_repl(config_path: Path, system_message_override: str = None, command_name: str = "chat"):
     """Initializes and returns the Chat Agent graph for the CLI."""
     config = load_config(config_path)
     llm = get_llm(role="chat", config_path=config_path)
+    
+    # Clear any default callbacks attached by get_llm to avoid duplication.
+    # The specific TokenLoggingCallbackHandler is passed via config in cli.py.
+    llm.callbacks = []
 
     tools = [read_file, write_file]
     
@@ -57,7 +64,12 @@ def start_chat_repl(config_path: Path, system_message_override: str = None):
     try:
         return create_react_agent(llm, tools, state_modifier=system_message, checkpointer=memory)
     except TypeError as e:
-        # Only fallback if the error is specifically about state_modifier not being accepted
+        # Fallback chain for different versions of langgraph
         if "state_modifier" in str(e):
-            return create_react_agent(llm, tools, messages_modifier=system_message, checkpointer=memory)
+            try:
+                return create_react_agent(llm, tools, messages_modifier=system_message, checkpointer=memory)
+            except TypeError as e2:
+                if "messages_modifier" in str(e2):
+                    return create_react_agent(llm, tools, prompt=SystemMessage(content=system_message), checkpointer=memory)
+                raise e2
         raise e

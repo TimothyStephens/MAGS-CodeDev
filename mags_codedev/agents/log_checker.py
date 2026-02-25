@@ -1,9 +1,9 @@
 import json
+import logging
 from langchain_core.prompts import ChatPromptTemplate
 from mags_codedev.state import FunctionState
 from mags_codedev.utils.config_parser import get_llm
 from mags_codedev.utils.logger import logger
-from mags_codedev.utils.db import log_token_usage
 
 def log_checker_node(state: FunctionState) -> dict:
     """Analyzes raw test/lint logs and outputs a concise bug-fix strategy."""
@@ -15,8 +15,16 @@ def log_checker_node(state: FunctionState) -> dict:
             "lint_results": ""  # Consume the (empty) lint results
         }
         
+    if state.get("log_filepath"):
+        import os
+        log_hash = os.path.basename(state["log_filepath"]).replace(".log", "")
+        func_logger = logging.getLogger(f"mags.func.{log_hash}")
+    else:
+        func_logger = logger
+        
     config_path = state["config_path"]
     llm = get_llm(role="log_checker", config_path=config_path)
+    model_name = getattr(llm, 'model_name', getattr(llm, 'model', 'unknown'))
     
     system_prompt = """You are a Senior Diagnostic Engineer. Your output MUST be a valid JSON object.
     Read the code, test traceback, and linter warnings.
@@ -26,10 +34,10 @@ def log_checker_node(state: FunctionState) -> dict:
     2. "summary": A string explaining why the code failed and providing a brief, actionable strategy for the Coder or Tester to fix it (under 5 sentences).
     
     Example:
-    {
+    {{
       "location": "SOURCE_CODE",
       "summary": "The function fails because it does not handle division by zero. Add a check at the beginning of the function to validate the divisor."
-    }"""
+    }}"""
 
     human_template = """
     Code:
@@ -47,8 +55,8 @@ def log_checker_node(state: FunctionState) -> dict:
         ("human", human_template)
     ])
     
-    logger.info(f"Log Checker: Sending prompt for '{state['function_name']}'.")
-    logger.debug(f"Log Checker Prompt:\n{prompt.format(code=state['code'], test_results=state.get('test_results', 'No test errors.'), lint_results=state.get('lint_results', 'No linting errors.'))}")
+    func_logger.info(f"Log Checker: Sending prompt for '{state['function_name']}'.")
+    func_logger.debug(f"Log Checker Prompt:\n{prompt.format(code=state['code'], test_results=state.get('test_results', 'No test errors.'), lint_results=state.get('lint_results', 'No linting errors.'))}")
 
     chain = prompt | llm
     response = chain.invoke({
@@ -60,7 +68,7 @@ def log_checker_node(state: FunctionState) -> dict:
     # Parse the JSON response with robust fallback
     response_content = response.content.strip()
     if "```json" in response_content:
-        response_content = response_content.split("```json")[1].split("```").strip()
+        response_content = response_content.split("```json")[1].split("```")[0].strip()
     
     try:
         data = json.loads(response_content)
@@ -73,22 +81,7 @@ def log_checker_node(state: FunctionState) -> dict:
         error_location = "SOURCE_CODE"
         error_summary = response_content
         
-    # Log token usage
-    try:
-        usage = response.response_metadata.get("token_usage", {})
-        in_tokens = usage.get("input_tokens", 0)
-        out_tokens = usage.get("output_tokens", 0)
-        log_token_usage(
-            role="log_checker",
-            model=llm.model_name,
-            in_tokens=in_tokens,
-            out_tokens=out_tokens
-        )
-        logger.debug(f"Log Checker Token Usage: In={in_tokens}, Out={out_tokens}")
-    except Exception as e:
-        logger.warning(f"Could not log token usage for log_checker: {e}")
-
-    logger.debug(f"Log Checker Response:\n{response.content}")
+    func_logger.debug(f"Log Checker Response:\n{response.content}")
 
     return {
         "error_summary": error_summary,

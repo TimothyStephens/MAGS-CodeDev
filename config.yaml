@@ -6,52 +6,50 @@ api_keys:
   gemini: "AIza..."
 
 models:
-  # -------------------------------------------------------------------
-  # PRIMARY CODER
-  # -------------------------------------------------------------------
-  # The heavy lifter. Use your strongest model with the largest token 
-  # allowance here (e.g., gpt-4o, claude-3.5-sonnet, gemini-2.5-pro).
-  coder:
-    provider: "openai"
-    model: "gpt-4o"
-
-  # -------------------------------------------------------------------
-  # SPECIALIZED AGENTS
-  # -------------------------------------------------------------------
-  tester:
-    provider: "anthropic"
-    model: "claude-3-5-sonnet-20240620"
-  
-  log_checker:
-    provider: "google"
-    model: "gemini-2.5-pro"
-    
-  chat:
-    provider: "openai"
-    model: "gpt-4o"
-
-  # -------------------------------------------------------------------
-  # CODE REVIEWERS (Parallel Consensus)
-  # -------------------------------------------------------------------
-  # Add as many models as you want. The LangGraph will execute these 
-  # concurrently and aggregate their feedback for the Coder agent.
-  reviewers:
-    - provider: "openai"
+  # ===================================================================
+  # == INTERACTIVE COMMAND AGENTS
+  # ===================================================================
+  # These models are used by `init`, `chat`, and `debug` commands.
+  interactive_commands:
+    chat:
+      provider: "openai"
       model: "gpt-4o"
-      
-    - provider: "google"
-      model: "gemini-2.5-pro"
-      
-    - provider: "anthropic"
+
+  # ===================================================================
+  # == BUILD WORKFLOW AGENTS
+  # ===================================================================
+  # These models are used by the `mags-codedev build` command.
+  build_workflow:
+    # The heavy lifter. Use your strongest model with the largest token 
+    # allowance here (e.g., gpt-4o, claude-3.5-sonnet, gemini-2.5-pro).
+    coder:
+      provider: "openai"
+      model: "gpt-4o"
+
+    tester:
+      provider: "anthropic"
       model: "claude-3-5-sonnet-20240620"
-      
-    # Example of a Locally Hosted Model (e.g., Ollama, vLLM, LM Studio)
-    # Uses the 'custom_openai' provider to route through LangChain's ChatOpenAI 
-    # class but points to your local machine's port.
-    - provider: "custom_openai" 
-      model: "llama3:70b"          # The exact model name your local server expects
-      base_url: "http://localhost:11434/v1" # Standard port for Ollama API
-      api_key: "ollama"            # Dummy key to satisfy the Langchain client
+    
+    log_checker:
+      provider: "google"
+      model: "gemini-2.5-pro"
+
+    # Add as many models as you want for code review. The LangGraph will 
+    # execute these concurrently and aggregate their feedback.
+    reviewers:
+      - provider: "openai"
+        model: "gpt-4o"
+      - provider: "google"
+        model: "gemini-2.5-pro"
+      - provider: "anthropic"
+        model: "claude-3-5-sonnet-20240620"
+      # Example of a Locally Hosted Model (e.g., Ollama, vLLM, LM Studio)
+      # Uses the 'custom_openai' provider to route through LangChain's ChatOpenAI 
+      # class but points to your local machine's port.
+      - provider: "custom_openai" 
+        model: "llama3:70b"          # The exact model name your local server expects
+        base_url: "http://localhost:11434/v1" # Standard port for Ollama API
+        api_key: "ollama"            # Dummy key to satisfy the Langchain client
 
 settings:
   max_parallel_functions: 4             # How many functions to build concurrently
