@@ -495,7 +495,7 @@ def init(
 2.  **Plan:** Propose a plan that includes:
     *   A file and directory structure.
     *   A list of core functions or components for the manifest.
-    *   Any necessary Python dependencies for `requirements.txt`.
+    *   Any necessary Python dependencies for `requirements.txt` and `Dockerfile.dev`.
     *   A brief project description for `README.md`.
     *   Any necessary entries for `.gitignore`.
 3.  **Execute:** Once the user approves your plan, use your tools to create or modify the project files. You have the `read_file` and `write_file` tools. If a file already exists, read it first to decide if you should append or overwrite.
@@ -504,28 +504,29 @@ def init(
 *   `{manifest_path}`: A JSON file defining the functions to be built. This is your primary output for the build system and should list each function that we need to build, its expected inputs, outputs, and functionality. As well as any other important details. One function per element in the JSON file. All functions that we require must be saved to this file. 
 *   `AGENT.md`: A markdown file with high-level instructions for the other AI agents (e.g., language, coding standards).
 *   `requirements.txt`: Add the Python dependencies needed for the project.
+*   `Dockerfile.dev`: Add the Python dependencies needed for the project and testing packages pytest, flake8, and mypy.
 *   `README.md`: Create a basic README file for the project.
 *   `.gitignore`: Add any necessary entries.
 
 **Example manifest.json file:**
 [
-            {
+            {{
                 "function_name": "calculate_discount",
                 "description": "Calculates a final price given a base price and a discount percentage.",
                 "location": "src/pricing.py",
                 "inputs": [
-                    {"name": "price", "type": "float", "description": "The base price."},
-                    {"name": "discount", "type": "float", "description": "The discount percentage, as a float (e.g., 0.10 for 10%)."}
+                    {{"name": "price", "type": "float", "description": "The base price."}},
+                    {{"name": "discount", "type": "float", "description": "The discount percentage, as a float (e.g., 0.10 for 10%)."}}
                 ],
                 "outputs": [
-                    {"name": "final_price", "type": "float", "description": "The price after applying the discount."}
+                    {{"name": "final_price", "type": "float", "description": "The price after applying the discount."}}
                 ],
                 "functionality": [
                     "Takes a price and a discount percentage.",
                     "Calculates the final price.",
                     "Returns the final price."
                 ]
-            }
+            }}
         ]
 
 **Important Rules:**
