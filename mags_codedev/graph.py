@@ -7,6 +7,7 @@ from mags_codedev.state import FunctionState
 from mags_codedev.agents.coder import coder_node
 from mags_codedev.agents.tester import tester_node
 from mags_codedev.utils.docker_ops import docker_test_node, linter_node
+from mags_codedev.utils.docker_ops import test_node, linter_node
 from mags_codedev.agents.log_checker import log_checker_node
 from mags_codedev.agents.reviewer import multi_llm_review_node
 
@@ -28,6 +29,8 @@ def build_function_graph():
     
     # Tool: Runs the tests in an isolated Docker container
     workflow.add_node("run_tests_in_docker", docker_test_node)
+    # Tool: Runs tests in the configured execution environment (docker, apptainer, local)
+    workflow.add_node("run_tests", test_node)
     
     # Tool: Runs MyPy/Flake8/Ruff on the code
     workflow.add_node("run_linters", linter_node)
@@ -44,6 +47,7 @@ def build_function_graph():
     workflow.set_entry_point("coder")
     workflow.add_edge("coder", "tester")
     workflow.add_edge("tester", "run_tests_in_docker")
+    workflow.add_edge("tester", "run_tests")
     
     # ---------------------------------------------------------
     # 3. Define Conditional Edges (Decision Logic)
@@ -55,12 +59,14 @@ def build_function_graph():
             return "max_iterations_reached"
             
         # The docker_test_node will populate state["test_results"]
+        # The test_node will populate state["test_results"]
         if "FAILED" in state["test_results"].upper() or "ERROR" in state["test_results"].upper():
             return "tests_failed"
         return "tests_passed"
         
     workflow.add_conditional_edges(
         "run_tests_in_docker",
+        "run_tests",
         evaluate_test_results,
         {
             "tests_passed": "run_linters",

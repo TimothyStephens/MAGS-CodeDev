@@ -211,3 +211,4 @@ __marimo__/
 *.sqlite3
 mags_tokens.db
 mags_cache.db
+config.yaml

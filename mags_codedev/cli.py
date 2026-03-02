@@ -36,17 +36,16 @@ console = Console()
 def _find_package_config_path() -> Optional[Path]:
     """Helper to find the location of the config file shipped with the package."""
     here = Path(__file__).resolve().parent
-    for candidate in [here / "config.yaml", here.parent / "config.yaml"]:
+    for candidate in [here / "config.template.yaml", here.parent / "config.template.yaml"]:
         if candidate.exists():
             return candidate
     return None
 
 _PACKAGE_CONFIG_PATH = _find_package_config_path()
 _CONFIG_HELP_TEXT = (
-    "Path to the configuration YAML file. "
-    "Defaults to './config.yaml' if it exists, "
-    f"otherwise falls back to the package config at '{_PACKAGE_CONFIG_PATH}'."
-) if _PACKAGE_CONFIG_PATH else "Path to the configuration YAML file. Defaults to './config.yaml'."
+    "Path to the configuration YAML file. If 'config.yaml' is not found, it will be created from 'config.template.yaml'. "
+    f"The package provides a template at '{_PACKAGE_CONFIG_PATH}'."
+) if _PACKAGE_CONFIG_PATH else "Path to the configuration YAML file. If 'config.yaml' is not found, it will be created from 'config.template.yaml'."
 
 # -------------------------------------------------------------------
 # HELPER: Dynamic Table Generation for the UI
@@ -128,23 +127,39 @@ def generate_status_table(status_dict: dict) -> Table:
     return table
 
 def find_default_config_path() -> Path:
-    """Finds the default config path, prioritizing project-level, then package."""
-    # 1. Prioritize project-level (current working directory)
+    """Finds the default config path, creating it from a template if needed."""
     project_config = Path("config.yaml")
+    
     if project_config.exists():
         logger.debug(f"Found project-level config: {project_config.resolve()}")
         return project_config
 
-    # 2. Fallback to package locations
-    here = Path(__file__).resolve().parent
-    for candidate in [here / "config.yaml", here.parent / "config.yaml"]:
-        if candidate.exists():
-            logger.debug(f"Found package-level config: {candidate}")
-            return candidate
+    # If config.yaml doesn't exist, try to create it from a template
+    template_path: Optional[Path] = None
+    template_source_msg = ""
     
-    # 3. If nothing found, default to the local path.
-    #    The `init` command can create it, other commands will fail if it's missing.
-    return Path("config.yaml")
+    # Prioritize template in project directory
+    project_template = Path("config.template.yaml")
+    if project_template.exists():
+        template_path = project_template
+        template_source_msg = "from 'config.template.yaml' in your project directory"
+    else:
+        # Fallback to package template
+        package_template = _find_package_config_path()
+        if package_template:
+            template_path = package_template
+            template_source_msg = "from the package template"
+
+    if template_path:
+        logger.info(f"'{project_config}' not found. Copying from template: {template_path}")
+        shutil.copy2(template_path, project_config)
+        console.print(f"[yellow]Created 'config.yaml' {template_source_msg}.[/yellow]")
+        console.print(f"[bold yellow]ACTION REQUIRED: Please edit 'config.yaml' to add your API keys before proceeding.[/bold yellow]")
+        return project_config
+
+    # If no config and no template, return the default path.
+    # Commands like `init` might create it, others will fail.
+    return project_config
 
 def validate_config_connections(config_path: Path) -> bool:
     """Verifies that the API keys and Models defined in config.yaml are valid and accessible."""
@@ -390,15 +405,20 @@ def init(
     logger.info("Starting workspace initialization.")
     
     # 1. Config Resolution
-    # We no longer automatically create a local config.yaml.
-    # We resolve to the package config unless the user explicitly provided a path that exists,
-    # or if they want to override it (which they can do by manually creating one later).
-    
-    # If the user provided a specific path that doesn't exist, resolve_config_path will handle the fallback logic
-    # or we can just let the subsequent commands use the resolved path.
+    # `find_default_config_path` will locate `config.yaml` or create it from a
+    # template if it doesn't exist.
     console.print(f"[cyan]Using configuration: {config_path}[/cyan]")
     logger.info(f"Using configuration: {config_path}")
     logger.info(f"Target manifest: {manifest_path}")
+
+    # Ensure a template exists for the user
+    project_template = Path("config.template.yaml")
+    if not project_template.exists():
+        package_template = _find_package_config_path()
+        if package_template:
+            shutil.copy2(package_template, project_template)
+            console.print(f"[green]Created '{project_template}' from package default.[/green]")
+            logger.info(f"Created '{project_template}' from package default.")
 
     # 2. Gitignore
     gitignore_content = "\n# MAGS-CodeDev\n.MAGS-CodeDev/\nconfig.yaml\n.worktree_*/\n"
