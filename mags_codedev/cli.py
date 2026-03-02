@@ -127,39 +127,41 @@ def generate_status_table(status_dict: dict) -> Table:
     return table
 
 def find_default_config_path() -> Path:
-    """Finds the default config path, creating it from a template if needed."""
-    project_config = Path("config.yaml")
+    """Finds the default config path, prioritizing the program directory."""
     
-    if project_config.exists():
-        logger.debug(f"Found project-level config: {project_config.resolve()}")
-        return project_config
-
-    # If config.yaml doesn't exist, try to create it from a template
-    template_path: Optional[Path] = None
-    template_source_msg = ""
+    # 1. Try to find/create config in the program directory (where the template is)
+    package_template = _find_package_config_path()
     
-    # Prioritize template in project directory
-    project_template = Path("config.template.yaml")
-    if project_template.exists():
-        template_path = project_template
-        template_source_msg = "from 'config.template.yaml' in your project directory"
-    else:
-        # Fallback to package template
-        package_template = _find_package_config_path()
-        if package_template:
-            template_path = package_template
-            template_source_msg = "from the package template"
+    if package_template:
+        program_config = package_template.with_name("config.yaml")
+        
+        if program_config.exists():
+            logger.debug(f"Found program-level config: {program_config.resolve()}")
+            return program_config
+            
+        # Attempt to create it in the program directory
+        try:
+            logger.info(f"'{program_config}' not found. Copying from template: {package_template}")
+            shutil.copy2(package_template, program_config)
+            console.print(f"[yellow]Created 'config.yaml' at {program_config}.[/yellow]")
+            console.print(f"[bold yellow]ACTION REQUIRED: Please edit '{program_config}' to add your API keys before proceeding.[/bold yellow]")
+            return program_config
+        except OSError:
+            # If we can't write to program dir, we continue to check CWD
+            pass
 
-    if template_path:
-        logger.info(f"'{project_config}' not found. Copying from template: {template_path}")
-        shutil.copy2(template_path, project_config)
-        console.print(f"[yellow]Created 'config.yaml' {template_source_msg}.[/yellow]")
-        console.print(f"[bold yellow]ACTION REQUIRED: Please edit 'config.yaml' to add your API keys before proceeding.[/bold yellow]")
-        return project_config
+    # 2. Fallback: Check if config exists in CWD (user might have manually created it)
+    cwd_config = Path("config.yaml")
+    if cwd_config.exists():
+        logger.debug(f"Found project-level config: {cwd_config.resolve()}")
+        return cwd_config
 
-    # If no config and no template, return the default path.
-    # Commands like `init` might create it, others will fail.
-    return project_config
+    # 3. If we couldn't create in program dir and none in CWD, return program_config path 
+    # if we found the template location (so error messages point there), otherwise CWD.
+    if package_template:
+        return package_template.with_name("config.yaml")
+        
+    return cwd_config
 
 def validate_config_connections(config_path: Path) -> bool:
     """Verifies that the API keys and Models defined in config.yaml are valid and accessible."""
@@ -211,33 +213,36 @@ def validate_config_connections(config_path: Path) -> bool:
 # -------------------------------------------------------------------
 # ASYNC WORKER: Processes a single function through LangGraph
 # -------------------------------------------------------------------
-async def process_function(func_name: str, spec: dict, status_dict: dict, semaphore: asyncio.Semaphore, git_lock: asyncio.Lock, config_path: Path, initial_error: str = None):
+async def process_function(func_name: str, spec: dict, status_dict: dict, semaphore: asyncio.Semaphore, git_lock: asyncio.Lock, config_path: Path, initial_error: str = None, force_fresh: bool = False):
     """Handles the full lifecycle of a single function generation in isolation."""
     
-    # Calculate hash for logging and DB
-    func_hash = hash_spec(spec)
-    log_dir = ".MAGS-CodeDev"
-    os.makedirs(log_dir, exist_ok=True)
-    log_filename = os.path.join(log_dir, f"{func_hash}.log")
-    log_filepath = os.path.abspath(log_filename)
-    
-    # Setup function-specific file logger
-    # We use a unique logger name to avoid conflicts
-    func_logger = logging.getLogger(f"mags.func.{func_hash}")
-    func_logger.setLevel(logging.DEBUG)
-    file_handler = logging.FileHandler(log_filepath, mode='w')
-    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-    func_logger.addHandler(file_handler)
-    # Don't propagate to root to keep main log clean of low-level details, unless desired.
-    # We'll keep propagation True but maybe the root logger config filters it? 
-    # For now, let's just rely on the file handler.
+    # Pre-initialize for the broader try/except/finally scope
+    worktree_path = None
+    branch_name = f"feature/{func_name}"
+    func_logger = None
+    log_filename = "main log" # Default for error messages
 
-    async with semaphore:
-        status_dict[func_name] = {"status": "Initializing...", "iterations": 0, "hash": func_hash, "log_file": log_filepath, "worktree": None, "step": "Init"}
-        branch_name = f"feature/{func_name}"
-        worktree_path = None # Initialize for error handling scope
+    try:
+        # Calculate hash for logging and DB
+        func_hash = hash_spec(spec)
+        log_dir = ".MAGS-CodeDev"
+        os.makedirs(log_dir, exist_ok=True)
+        log_filename = os.path.join(log_dir, f"{func_hash}.log")
+        log_filepath = os.path.abspath(log_filename)
         
-        try:
+        func_logger = logging.getLogger(f"mags.func.{func_hash}")
+        func_logger.setLevel(logging.DEBUG)
+        # Avoid adding handlers multiple times if this function is re-run in the same process
+        if not func_logger.handlers:
+            file_handler = logging.FileHandler(log_filepath, mode='w')
+            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+            func_logger.addHandler(file_handler)
+
+        async with semaphore:
+            status_dict[func_name] = {"status": "Initializing...", "iterations": 0, "hash": func_hash, "log_file": log_filepath, "worktree": None, "step": "Init"}
+            # The original try block was here. We've moved it up to encompass the whole function.
+            # The original except and finally are now replaced by the top-level ones.
+
             # Validate spec requirements
             if 'location' not in spec:
                 raise ValueError(f"Manifest entry for '{func_name}' is missing required field: 'location'")
@@ -245,7 +250,7 @@ async def process_function(func_name: str, spec: dict, status_dict: dict, semaph
             status_dict[func_name]["status"] = "Creating Git Worktree..."
             # 1. Create isolated Git worktree (serialized to prevent index.lock contention)
             async with git_lock:
-                worktree_path = await asyncio.to_thread(create_parallel_worktree, branch_name)
+                worktree_path = await asyncio.to_thread(create_parallel_worktree, branch_name, force_fresh=force_fresh)
             status_dict[func_name]["worktree"] = worktree_path
             
             # Copy requirements.txt to worktree if it exists in root but not in worktree
@@ -287,6 +292,10 @@ async def process_function(func_name: str, spec: dict, status_dict: dict, semaph
                 with open(test_path, 'r') as f:
                     existing_tests = f.read()
 
+            # Load config to get max_iterations
+            config = load_config(config_path)
+            max_iterations = config.get("settings", {}).get("max_iterations", 5)
+
             # 2. Initialize LangGraph State
             initial_state: FunctionState = {
                 "function_name": func_name,
@@ -302,7 +311,7 @@ async def process_function(func_name: str, spec: dict, status_dict: dict, semaph
                 "review_comments": [],
                 "error_summary": initial_error or "",
                 "iteration_count": 1 if initial_error else 0,
-                "max_iterations": 5, # Prevent infinite loops
+                "max_iterations": max_iterations, # Prevent infinite loops
                 "status": "in_progress"
             }
             
@@ -322,12 +331,20 @@ async def process_function(func_name: str, spec: dict, status_dict: dict, semaph
             status_dict[func_name]["step"] = "Complete"
             
             # Determine success based on the state
-            if final_state.get("status") == "success":
+            max_iter_reached = final_state.get("iteration_count", 0) >= final_state.get("max_iterations", 5)
+
+            # The graph successfully finishes if it reaches the END node *without* hitting the max iteration limit.
+            # All failure paths in the graph that lead to END do so because of max_iterations.
+            success = not max_iter_reached
+            
+            if success:
                 status_dict[func_name]["status"] = "Success: Tests & Reviews Passed"
-                success = True
             else:
                 status_dict[func_name]["status"] = "Failed: Max Iterations Reached"
-                success = False
+                warn_msg = f"Workflow for '{func_name}' aborted: Reached maximum iterations ({final_state.get('max_iterations')})."
+                logger.warning(warn_msg)
+                func_logger.warning(warn_msg)
+                func_logger.warning(f"Final Error Summary: {final_state.get('error_summary', 'None')}")
 
             # Always write the latest code/tests to file so the user can inspect them in the worktree
             # regardless of success/failure.
@@ -367,17 +384,20 @@ async def process_function(func_name: str, spec: dict, status_dict: dict, semaph
             elif success: # This means the graph succeeded but the merge failed
                 status_dict[func_name]["status"] = "Failed: Merge Conflict"
 
-        except Exception as e:
-            func_logger.exception(f"Error processing {func_name}")
-            # Also log a high-level error to the main logger
-            logger.error(f"Error processing {func_name} (see {log_filename}): {e}")
-            status_dict[func_name]["status"] = f"Error: {str(e)}"
-            if worktree_path:
-                async with git_lock:
-                    await asyncio.to_thread(merge_and_cleanup_worktree, branch_name, worktree_path, False)
-        finally:
-            # Clean up handlers to avoid memory leaks
-            for handler in func_logger.handlers:
+    except Exception as e:
+        # This is the new top-level exception handler.
+        effective_logger = func_logger if func_logger else logger
+        effective_logger.exception(f"Error processing {func_name}")
+        
+        logger.error(f"Error processing {func_name} (see {log_filename}): {e}")
+        status_dict[func_name]["status"] = f"Error: {str(e)}"
+        
+        if worktree_path:
+            async with git_lock:
+                await asyncio.to_thread(merge_and_cleanup_worktree, branch_name, worktree_path, False)
+    finally:
+        if func_logger:
+            for handler in list(func_logger.handlers): # Use list to avoid modifying during iteration
                 handler.close()
                 func_logger.removeHandler(handler)
 
@@ -411,17 +431,8 @@ def init(
     logger.info(f"Using configuration: {config_path}")
     logger.info(f"Target manifest: {manifest_path}")
 
-    # Ensure a template exists for the user
-    project_template = Path("config.template.yaml")
-    if not project_template.exists():
-        package_template = _find_package_config_path()
-        if package_template:
-            shutil.copy2(package_template, project_template)
-            console.print(f"[green]Created '{project_template}' from package default.[/green]")
-            logger.info(f"Created '{project_template}' from package default.")
-
     # 2. Gitignore
-    gitignore_content = "\n# MAGS-CodeDev\n.MAGS-CodeDev/\nconfig.yaml\n.worktree_*/\n"
+    gitignore_content = "\n# MAGS-CodeDev\n.MAGS-CodeDev/\nconfig.yaml\n.worktree_*/\nDockerfile.mags-codedev\n*.sif.def\n"
     if os.path.exists(".gitignore"):
         with open(".gitignore", "r") as f:
             current_content = f.read()
@@ -495,7 +506,7 @@ def init(
 2.  **Plan:** Propose a plan that includes:
     *   A file and directory structure.
     *   A list of core functions or components for the manifest.
-    *   Any necessary Python dependencies for `requirements.txt` and `Dockerfile.dev`.
+    *   Any necessary Python dependencies for `requirements.txt`.
     *   A brief project description for `README.md`.
     *   Any necessary entries for `.gitignore`.
 3.  **Execute:** Once the user approves your plan, use your tools to create or modify the project files. You have the `read_file` and `write_file` tools. If a file already exists, read it first to decide if you should append or overwrite.
@@ -504,7 +515,6 @@ def init(
 *   `{manifest_path}`: A JSON file defining the functions to be built. This is your primary output for the build system and should list each function that we need to build, its expected inputs, outputs, and functionality. As well as any other important details. One function per element in the JSON file. All functions that we require must be saved to this file. 
 *   `AGENT.md`: A markdown file with high-level instructions for the other AI agents (e.g., language, coding standards).
 *   `requirements.txt`: Add the Python dependencies needed for the project.
-*   `Dockerfile.dev`: Add the Python dependencies needed for the project and testing packages pytest, flake8, and mypy.
 *   `README.md`: Create a basic README file for the project.
 *   `.gitignore`: Add any necessary entries.
 
@@ -532,6 +542,7 @@ def init(
 **Important Rules:**
 *   **Do not write any files until the user has approved your plan.**
 *   **Use the `write_file` tool to create/modify files directly.** Do not output file content in the chat.
+*   **Create all project configuration files in the root directory.** Files like `{manifest_path}`, `AGENT.md`, `README.md`, `requirements.txt`, and `Dockerfile.dev` must be created in the current directory, not in a subdirectory. Source code itself can be in subdirectories (e.g., `src/my_code.py`).
 *   Start by greeting the user and asking about their project idea."""
 
             console.print(Panel("[bold green]AI Architect Mode[/bold green]\nDescribe your project idea. The AI will ask questions and then use its tools to write `AGENT.md` and `manifest.json` for you.\n\nType 'exit' or 'quit' to end the session."))
@@ -623,7 +634,10 @@ def build(
     ),
     skip_validation: bool = typer.Option(
         False, "--skip-validation", help="Skip the pre-build connection check."
-    )
+    ),
+    force_fresh: bool = typer.Option(
+        False, "--force-fresh", help="Force a fresh build by deleting existing worktrees and branches for pending functions."
+    ),
 ):
     """Build all pending functions in manifest.json using parallel multi-agent LangGraphs."""
     if config_path is None:
@@ -689,7 +703,7 @@ def build(
                     await asyncio.sleep(0.25)
 
             build_tasks = [
-                process_function(name, spec, status_dict, semaphore, git_lock, config_path) 
+                process_function(name, spec, status_dict, semaphore, git_lock, config_path, force_fresh=force_fresh) 
                 for name, spec in pending_functions.items()
             ]
             
@@ -721,7 +735,7 @@ def build(
 @app.command()
 def debug(
     error_msg: str = typer.Argument(..., help="The error trace to fix, or a path to the error trace logfile."),
-    function_name: str = typer.Option(None, "--function", "-f", help="The function name in manifest.json to apply the fix to."),
+    function_name: Optional[str] = typer.Option(None, "--function", "-f", help="The function name in manifest.json to apply the fix to. (Optional if providing a log file)"),
     manifest_path: Path = typer.Option(
         "manifest.json", "--manifest", "-m", help="Path to the manifest JSON file."
     ),
@@ -736,14 +750,69 @@ def debug(
         console.print(f"[red]Error: Specified config file not found at '{config_path}'[/red]")
         raise typer.Exit(1)
 
+    is_log_file = False
+    log_file_path = None
+    
+    # Check if the argument is exactly a file
+    if os.path.exists(error_msg) and os.path.isfile(error_msg):
+        is_log_file = True
+        log_file_path = error_msg
+        try:
+            with open(error_msg, "r") as f:
+                console.print(f"[cyan]Reading error trace from file: {error_msg}[/cyan]")
+                error_msg = f.read()
+        except Exception as e:
+            console.print(f"[red]Error reading file '{error_msg}': {e}[/red]")
+            raise typer.Exit(1)
+    else:
+        # Check if the argument contains a file path (e.g. "Check file.log")
+        words = error_msg.split()
+        for word in words:
+            # Remove common punctuation that might trail a path in a sentence
+            clean_word = word.strip(".,;:'\"")
+            if os.path.exists(clean_word) and os.path.isfile(clean_word):
+                is_log_file = True
+                log_file_path = clean_word
+                try:
+                    with open(clean_word, "r") as f:
+                        console.print(f"[cyan]Reading error trace from file: {clean_word}[/cyan]")
+                        file_content = f.read()
+                        # Append content to the prompt
+                        error_msg = f"{error_msg}\n\n--- Log File Content ---\n{file_content}"
+                except Exception as e:
+                    console.print(f"[red]Error reading file '{clean_word}': {e}[/red]")
+                    raise typer.Exit(1)
+                break
+
+    # Auto-detect function from log file if not provided
+    if is_log_file and not function_name:
+        try:
+            log_hash = Path(log_file_path).stem
+            # Check if the stem looks like a sha256 hash
+            if len(log_hash) == 64 and all(c in '0123456789abcdef' for c in log_hash):
+                if not manifest_path.exists():
+                    console.print(f"[yellow]Manifest '{manifest_path}' not found. Cannot auto-detect function from log.[/yellow]")
+                else:
+                    with open(manifest_path, "r") as f:
+                        manifest = json.load(f)
+                    for spec in manifest:
+                        if hash_spec(spec) == log_hash:
+                            function_name = spec.get("function_name")
+                            if function_name:
+                                console.print(f"[cyan]Auto-detected function '[bold]{function_name}[/bold]' from log file.[/cyan]")
+                                break
+        except Exception as e:
+            # This is a convenience feature, so don't crash if it fails.
+            logger.warning(f"Could not auto-detect function from log file: {e}")
+
     logger.info(f"Using configuration: {config_path}")
     logger.info(f"Using manifest: {manifest_path}")
     console.print(Panel(f"[bold red]Debugging Error:[/bold red]\n{error_msg}"))
     
-    # Scenario A: Function name provided -> Run the Graph to fix it
+    # Scenario A: Function name is now known (either provided or detected)
     if function_name:
         if not manifest_path.exists():
-            console.print("[red]Manifest not found.[/red]")
+            console.print(f"[red]Manifest '{manifest_path}' not found.[/red]")
             raise typer.Exit(1)
             
         with open(manifest_path, "r") as f:

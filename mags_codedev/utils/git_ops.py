@@ -17,7 +17,7 @@ def validate_git_repo():
     except Exception as e:
         raise RuntimeError(f"Git validation failed: {e}")
 
-def create_parallel_worktree(branch_name: str) -> str:
+def create_parallel_worktree(branch_name: str, force_fresh: bool = False) -> str:
     """Creates a new git branch and checks it out in an isolated worktree directory."""
     # Validation is now handled by the caller (cli.py) via validate_git_repo()
 
@@ -25,22 +25,38 @@ def create_parallel_worktree(branch_name: str) -> str:
     safe_dir_name = branch_name.replace("/", "_")
     worktree_path = os.path.abspath(f".worktree_{safe_dir_name}")
     
-    # Clean up any stale worktree directory from previous failed runs
+    repo = git.Repo(os.getcwd())
+
+    # If forcing a fresh start, remove existing worktree and branch
+    if force_fresh:
+        if os.path.exists(worktree_path):
+            # This command tells git to forget about the worktree and removes the directory
+            subprocess.run(["git", "worktree", "remove", "--force", worktree_path], check=False, capture_output=True)
+        if branch_name in repo.heads:
+            repo.delete_head(branch_name, force=True)
+        # Failsafe cleanup if worktree remove didn't clear the directory
+        if os.path.exists(worktree_path):
+            shutil.rmtree(worktree_path)
+
+    # 1. Reuse existing worktree if available (Iteration Mode)
     if os.path.exists(worktree_path):
-        shutil.rmtree(worktree_path)
-        
+        return worktree_path
+
+    # 2. Reuse existing branch if available (but worktree dir is missing)
+    if branch_name in repo.heads:
+        subprocess.run(["git", "worktree", "prune"], check=False, capture_output=True)
+        try:
+            subprocess.run(["git", "worktree", "add", worktree_path, branch_name], check=True, capture_output=True)
+            return worktree_path
+        except subprocess.CalledProcessError:
+            # If we can't checkout (e.g. branch is checked out elsewhere), force delete and start fresh
+            repo.delete_head(branch_name, force=True)
+
+    # 3. Create Fresh Worktree
+    
     # Prune git worktree metadata to ensure we can create a new one
     subprocess.run(["git", "worktree", "prune"], check=False, capture_output=True)
     
-    # Ensure the branch doesn't exist from a failed previous run
-    try:
-        repo = git.Repo(os.getcwd())
-        if branch_name in repo.heads:
-            # Force delete the branch to start fresh
-            repo.delete_head(branch_name, force=True)
-    except (git.InvalidGitRepositoryError, OSError):
-        pass 
-
     # Create branch and worktree
     try:
         # Determine base branch

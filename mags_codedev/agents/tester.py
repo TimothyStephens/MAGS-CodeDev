@@ -1,5 +1,6 @@
 import logging
 from langchain_core.prompts import ChatPromptTemplate
+from pathlib import Path
 from mags_codedev.state import FunctionState
 from mags_codedev.utils.config_parser import get_llm
 from mags_codedev.utils.logger import logger
@@ -17,16 +18,23 @@ def tester_node(state: FunctionState) -> dict:
     else:
         func_logger = logger
     
+    # Determine the correct import path from the project root to guide the LLM
+    source_location = state['spec']['location']
+    # e.g., "src/utils/helpers.py" -> "src.utils.helpers"
+    module_path = Path(source_location).with_suffix('').as_posix().replace('/', '.')
+    import_instruction = f"To import the function, use a statement like `from {module_path} import {state['function_name']}`."
+
     # Check if we are in a fix cycle for tests
     is_fix = bool(state.get("error_summary")) and state.get("error_location") == "TEST_CODE"
     
-    system_prompt = """You are a strict QA Automation Engineer.
+    system_prompt = f"""You are a strict QA Automation Engineer.
     Write robust `pytest` unit tests for the provided Python code.
     The code is part of a larger project, so ensure imports are correct.
+    {import_instruction}
     Include edge cases, type boundary checks, and failure scenarios.
     The code to be tested is located at the path specified in the 'location' field of the spec.
     Return ONLY valid Python code for the test file. Do not include markdown formatting."""
-    
+
     if is_fix:
         human_template = """The previous attempt to write tests failed. Please fix them.
         
@@ -85,5 +93,4 @@ Generated Code to Test:
 
     return {
         "tests": str(content).strip(),
-        "error_summary": "" # Clear the error summary after addressing it
     }

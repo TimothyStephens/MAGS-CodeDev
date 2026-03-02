@@ -98,7 +98,5 @@ def coder_node(state: FunctionState) -> dict:
         "code": str(content).strip(),
         # Increment the iteration counter
         "iteration_count": state.get("iteration_count", 0) + 1,
-        # Clear previous feedback
-        "error_summary": "",
         "review_comments": []
     }
