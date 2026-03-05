@@ -1094,35 +1094,59 @@ def chat(
 def tokens():
     """Display a rich table of token usage and costs across all models and runs."""
     init_db() # Ensure DB and table exist
-    summary, total = get_token_summary()
+    per_role_summary, per_model_summary, total = get_token_summary()
 
-    table = Table(
-        title="MAGs-CodeDev Token Usage Summary", 
+    if not per_role_summary:
+        console.print("[yellow]No token usage has been recorded yet.[/yellow]")
+        return
+
+    # --- Per Role Table ---
+    role_table = Table(
+        title="Token Usage by Agent/Role", 
         show_header=True, 
         header_style="bold cyan",
         show_footer=True,
         footer_style="bold"
     )
-    table.add_column("Agent/Role", style="green", footer="Total")
-    table.add_column("Model", style="yellow")
-    table.add_column("Input Tokens", justify="right")
-    table.add_column("Output Tokens", justify="right")
-    table.add_column("Total Tokens", justify="right", footer=f"{total[0] + total[1]:,}")
-    
-    if not summary:
-        console.print("[yellow]No token usage has been recorded yet.[/yellow]")
-        return
+    role_table.add_column("Agent/Role", style="green", footer="Total")
+    role_table.add_column("Model", style="yellow")
+    role_table.add_column("Input Tokens", justify="right")
+    role_table.add_column("Output Tokens", justify="right")
+    role_table.add_column("Total Tokens", justify="right", footer=f"{total[0] + total[1]:,}")
 
-    for role, model, in_tokens, out_tokens in summary:
-        table.add_row(
+    for role, model, in_tokens, out_tokens in per_role_summary:
+        role_table.add_row(
             role,
             model,
             f"{in_tokens:,}",
             f"{out_tokens:,}",
             f"{in_tokens + out_tokens:,}"
         )
-    
-    console.print(table)
+    console.print(role_table)
+
+    # --- Per Model Table ---
+    if per_model_summary:
+        model_table = Table(
+            title="Token Usage by Model",
+            show_header=True,
+            header_style="bold cyan",
+            show_footer=True,
+            footer_style="bold"
+        )
+        model_table.add_column("Model", style="yellow", footer="Total")
+        model_table.add_column("Input Tokens", justify="right", footer=f"{total[0]:,}")
+        model_table.add_column("Output Tokens", justify="right", footer=f"{total[1]:,}")
+        model_table.add_column("Total Tokens", justify="right", footer=f"{total[0] + total[1]:,}")
+
+        for model, in_tokens, out_tokens in per_model_summary:
+            model_table.add_row(
+                model,
+                f"{in_tokens:,}",
+                f"{out_tokens:,}",
+                f"{in_tokens + out_tokens:,}"
+            )
+        
+        console.print(model_table)
 
 
 @app.command(name="list-models")

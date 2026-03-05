@@ -89,11 +89,21 @@ def get_token_summary():
             GROUP BY role, model
             ORDER BY role
         """)
-        summary = cursor.fetchall()
+        per_role_summary = cursor.fetchall()
+
+        # Get per-model summary
+        cursor.execute("""
+            SELECT model, SUM(in_tokens), SUM(out_tokens)
+            FROM token_usage
+            GROUP BY model
+            ORDER BY model
+        """)
+        per_model_summary = cursor.fetchall()
+
         # Get total
         cursor.execute("SELECT COALESCE(SUM(in_tokens), 0), COALESCE(SUM(out_tokens), 0) FROM token_usage")
         total = cursor.fetchone()
-        return summary, total or (0, 0)
+        return per_role_summary, per_model_summary, total or (0, 0)
 
 class TokenLoggingCallbackHandler(BaseCallbackHandler):
     """Callback Handler that logs token usage to the SQLite DB."""
