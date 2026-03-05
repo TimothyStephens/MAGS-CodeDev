@@ -1,11 +1,11 @@
 import json
 import logging
 from langchain_core.prompts import ChatPromptTemplate
-from mags_codedev.state import FunctionState
+from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import get_llm
 from mags_codedev.utils.logger import logger
 
-def log_checker_node(state: FunctionState) -> dict:
+def log_checker_node(state: ModuleState) -> dict:
     """Analyzes raw test/lint logs and outputs a concise bug-fix strategy."""
     # If the docker_test_node already determined tests passed, skip analysis
     if "FAILED" not in state.get("test_results", "").upper() and "ERROR" not in state.get("test_results", "").upper() and not state.get("lint_results"):
@@ -55,7 +55,7 @@ def log_checker_node(state: FunctionState) -> dict:
         ("human", human_template)
     ])
     
-    func_logger.info(f"Log Checker: Sending prompt for '{state['function_name']}'.")
+    func_logger.info(f"Log Checker: Sending prompt for '{state['module_location']}'.")
     func_logger.debug(f"Log Checker Prompt:\n{prompt.format(code=state['code'], test_results=state.get('test_results', 'No test errors.'), lint_results=state.get('lint_results', 'No linting errors.'))}")
 
     chain = prompt | llm
@@ -66,9 +66,19 @@ def log_checker_node(state: FunctionState) -> dict:
     })
     
     # Parse the JSON response with robust fallback
-    response_content = response.content.strip()
+    content = response.content
+    if isinstance(content, list):
+        content = "".join(
+            block if isinstance(block, str) else 
+            block.get("text", "") if isinstance(block, dict) else 
+            getattr(block, "text", str(block))
+            for block in content
+        )
+    response_content = str(content).strip()
     if "```json" in response_content:
         response_content = response_content.split("```json")[1].split("```")[0].strip()
+    elif "```" in response_content:
+        response_content = response_content.split("```")[1].split("```")[0].strip()
     
     try:
         data = json.loads(response_content)

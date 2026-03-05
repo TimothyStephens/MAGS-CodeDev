@@ -9,16 +9,18 @@ import subprocess
 import logging
 import typer
 from typing import Optional
+from typing import Optional, Union
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from pathlib import Path
 from rich.live import Live
+from rich.tree import Tree
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 # Import our MAGs-CodeDev modules
-from mags_codedev.state import FunctionState
+from mags_codedev.state import ModuleState
 from mags_codedev.graph import build_function_graph
 from mags_codedev.utils.db import init_db, is_function_built, mark_function_built, get_token_summary, TokenLoggingCallbackHandler, hash_spec
 from mags_codedev.utils.git_ops import create_parallel_worktree, merge_and_cleanup_worktree, validate_git_repo
@@ -101,17 +103,77 @@ def generate_status_table(status_dict: dict) -> Table:
     """Generates a rich table tracking the live status of parallel builds."""
     table = Table(title="Parallel Function Builder", show_header=True, header_style="bold cyan")
     table.add_column("Hash", style="dim", width=8)
-    table.add_column("Function", style="white")
+    table.add_column("Module", style="white")
     table.add_column("Step", style="magenta")
     table.add_column("Status", style="bold")
     table.add_column("Iterations", justify="center")
+def generate_status_table(status_dict: dict, module_map: Optional[dict] = None) -> Union[Table, Tree]:
+    """Generates a rich table or tree tracking the live status of parallel builds."""
+    if not module_map:
+        # Legacy/Flat Table View
+        table = Table(title="Parallel Function Builder", show_header=True, header_style="bold cyan")
+        table.add_column("Hash", style="dim", width=8)
+        table.add_column("Module", style="white")
+        table.add_column("Step", style="magenta")
+        table.add_column("Status", style="bold")
+        table.add_column("Iterations", justify="center")
 
     for func_name, info in status_dict.items():
+        for func_name, info in status_dict.items():
+            state_color = "yellow"
+            if "Success" in info['status'] or "Completed" in info['status']:
+                state_color = "green"
+            elif "Fail" in info['status'] or "Error" in info['status']:
+                state_color = "red"
+                
+            status_text = info['status']
+            if len(status_text) > 60:
+                status_text = status_text[:57] + "..."
+                
+            table.add_row(
+                info.get('hash', '')[:8],
+                func_name, 
+                info.get('step', '-'),
+                f"[{state_color}]{status_text}[/{state_color}]", 
+                str(info['iterations'])
+            )
+        return table
+    
+    # Hierarchical Tree View
+    tree = Tree("[bold cyan]Build Dependency Tree[/bold cyan]")
+    
+    # Identify Roots (Modules that are not dependencies of others)
+    all_deps = set()
+    for spec in module_map.values():
+        for dep in spec.get("dependencies", []):
+            all_deps.add(dep)
+            
+    roots = [loc for loc in module_map if loc not in all_deps]
+    # If no roots found (e.g. circular or single node loop?), fallback to all modules
+    if not roots and module_map:
+        roots = sorted(list(module_map.keys()))
+    else:
+        roots.sort()
+
+    def add_children(node, loc, path):
+        if loc in path:
+            node.add(f"[bold red]{loc} (Cycle Detected)[/bold red]")
+            return
+
+        info = status_dict.get(loc, {})
+        status = info.get("status", "Pending")
+        step = info.get("step", "-")
+        iterations = info.get("iterations", 0)
+        
         state_color = "yellow"
-        if "Success" in info['status']:
+        if "Success" in info['status'] or "Completed" in info['status']:
+        if "Success" in status or "Completed" in status:
             state_color = "green"
         elif "Fail" in info['status'] or "Error" in info['status']:
+        elif "Fail" in status or "Error" in status:
             state_color = "red"
+        elif "Waiting" in status:
+            state_color = "dim yellow"
             
         status_text = info['status']
         if len(status_text) > 60:
@@ -125,6 +187,25 @@ def generate_status_table(status_dict: dict) -> Table:
             str(info['iterations'])
         )
     return table
+        # Format: Module - Status (Step, Iter)
+        label = f"[bold white]{loc}[/bold white] : [{state_color}]{status}[/{state_color}] [dim](Step: {step}, Iter: {iterations})[/dim]"
+        
+        branch = node.add(label)
+        
+        spec = module_map.get(loc, {})
+        deps = spec.get("dependencies", [])
+        
+        new_path = path | {loc}
+        for dep in sorted(deps):
+            if dep in module_map:
+                add_children(branch, dep, new_path)
+            else:
+                branch.add(f"[dim red]{dep} (Missing/External)[/dim red]")
+
+    for root in roots:
+        add_children(tree, root, set())
+        
+    return tree
 
 def find_default_config_path() -> Path:
     """Finds the default config path, prioritizing the program directory."""
@@ -213,12 +294,12 @@ def validate_config_connections(config_path: Path) -> bool:
 # -------------------------------------------------------------------
 # ASYNC WORKER: Processes a single function through LangGraph
 # -------------------------------------------------------------------
-async def process_function(func_name: str, spec: dict, status_dict: dict, semaphore: asyncio.Semaphore, git_lock: asyncio.Lock, config_path: Path, initial_error: str = None, force_fresh: bool = False):
-    """Handles the full lifecycle of a single function generation in isolation."""
+async def process_module(module_location: str, spec: dict, status_dict: dict, semaphore: asyncio.Semaphore, git_lock: asyncio.Lock, config_path: Path, initial_error: str = None, force_fresh: bool = False):
+    """Handles the full lifecycle of a single module generation in isolation."""
     
     # Pre-initialize for the broader try/except/finally scope
     worktree_path = None
-    branch_name = f"feature/{func_name}"
+    branch_name = f"feature/{module_location}"
     func_logger = None
     log_filename = "main log" # Default for error messages
 
@@ -239,19 +320,19 @@ async def process_function(func_name: str, spec: dict, status_dict: dict, semaph
             func_logger.addHandler(file_handler)
 
         async with semaphore:
-            status_dict[func_name] = {"status": "Initializing...", "iterations": 0, "hash": func_hash, "log_file": log_filepath, "worktree": None, "step": "Init"}
+            status_dict[module_location] = {"status": "Initializing...", "iterations": 0, "hash": func_hash, "log_file": log_filepath, "worktree": None, "step": "Init"}
             # The original try block was here. We've moved it up to encompass the whole function.
             # The original except and finally are now replaced by the top-level ones.
 
             # Validate spec requirements
             if 'location' not in spec:
-                raise ValueError(f"Manifest entry for '{func_name}' is missing required field: 'location'")
+                raise ValueError(f"Manifest entry for '{module_location}' is missing required field: 'location'")
 
-            status_dict[func_name]["status"] = "Creating Git Worktree..."
+            status_dict[module_location]["status"] = "Creating Git Worktree..."
             # 1. Create isolated Git worktree (serialized to prevent index.lock contention)
             async with git_lock:
                 worktree_path = await asyncio.to_thread(create_parallel_worktree, branch_name, force_fresh=force_fresh)
-            status_dict[func_name]["worktree"] = worktree_path
+            status_dict[module_location]["worktree"] = worktree_path
             
             # Copy requirements.txt to worktree if it exists in root but not in worktree
             # This ensures dependencies are available for Docker tests even if not committed to main
@@ -297,9 +378,9 @@ async def process_function(func_name: str, spec: dict, status_dict: dict, semaph
             max_iterations = config.get("settings", {}).get("max_iterations", 5)
 
             # 2. Initialize LangGraph State
-            initial_state: FunctionState = {
-                "function_name": func_name,
+            initial_state: ModuleState = {
                 "spec": spec,
+                "module_location": module_location,
                 "log_filepath": log_filepath,
                 "config_path": config_path,
                 "worktree_path": worktree_path,
@@ -316,19 +397,19 @@ async def process_function(func_name: str, spec: dict, status_dict: dict, semaph
             }
             
             # 3. Compile and Run the Graph
-            status_dict[func_name]["status"] = "Running Multi-Agent Graph..."
+            status_dict[module_location]["status"] = "Running Multi-Agent Graph..."
             graph = build_function_graph()
             
             # Execute the state machine asynchronously using streaming for live updates
             final_state = initial_state.copy()
             async for event in graph.astream(initial_state):
                 for node_name, state_update in event.items():
-                    status_dict[func_name]["step"] = node_name
+                    status_dict[module_location]["step"] = node_name
                     if "iteration_count" in state_update:
-                        status_dict[func_name]["iterations"] = state_update["iteration_count"]
+                        status_dict[module_location]["iterations"] = state_update["iteration_count"]
                     final_state.update(state_update)
             
-            status_dict[func_name]["step"] = "Complete"
+            status_dict[module_location]["step"] = "Complete"
             
             # Determine success based on the state
             max_iter_reached = final_state.get("iteration_count", 0) >= final_state.get("max_iterations", 5)
@@ -338,10 +419,10 @@ async def process_function(func_name: str, spec: dict, status_dict: dict, semaph
             success = not max_iter_reached
             
             if success:
-                status_dict[func_name]["status"] = "Success: Tests & Reviews Passed"
+                status_dict[module_location]["status"] = "Success: Tests & Reviews Passed"
             else:
-                status_dict[func_name]["status"] = "Failed: Max Iterations Reached"
-                warn_msg = f"Workflow for '{func_name}' aborted: Reached maximum iterations ({final_state.get('max_iterations')})."
+                status_dict[module_location]["status"] = "Failed: Max Iterations Reached"
+                warn_msg = f"Workflow for '{module_location}' aborted: Reached maximum iterations ({final_state.get('max_iterations')})."
                 logger.warning(warn_msg)
                 func_logger.warning(warn_msg)
                 func_logger.warning(f"Final Error Summary: {final_state.get('error_summary', 'None')}")
@@ -363,14 +444,14 @@ async def process_function(func_name: str, spec: dict, status_dict: dict, semaph
 
             # If successful, commit it in the worktree
             if success:
-                status_dict[func_name]["status"] = "Committing to Branch..."
+                status_dict[module_location]["status"] = "Committing to Branch..."
                 # Commit the changes in the worktree's branch
                 repo = git.Repo(worktree_path)
                 relative_test_path = os.path.relpath(test_output_path, worktree_path)
                 repo.index.add([spec['location'], relative_test_path])
-                repo.index.commit(f"feat: Implement function '{func_name}' via MAGs-CodeDev")
+                repo.index.commit(f"feat: Implement module '{module_location}' via MAGs-CodeDev")
             # 4. Merge and Cleanup
-            status_dict[func_name]["status"] = "Merging Branch..." if success else "Cleaning up Failed Branch..."
+            status_dict[module_location]["status"] = "Merging Branch..." if success else "Cleaning up Failed Branch..."
             
             merge_succeeded = False
             # Use lock to ensure only one thread performs git merge operations on the main repo at a time
@@ -379,18 +460,18 @@ async def process_function(func_name: str, spec: dict, status_dict: dict, semaph
             
             # 5. Mark as complete in DB only if the merge was successful
             if merge_succeeded:
-                await asyncio.to_thread(mark_function_built, func_name, spec)
-                status_dict[func_name]["status"] = "Success: Merged to Main"
+                await asyncio.to_thread(mark_function_built, module_location, spec)
+                status_dict[module_location]["status"] = "Success: Merged to Main"
             elif success: # This means the graph succeeded but the merge failed
-                status_dict[func_name]["status"] = "Failed: Merge Conflict"
+                status_dict[module_location]["status"] = "Failed: Merge Conflict"
 
     except Exception as e:
         # This is the new top-level exception handler.
         effective_logger = func_logger if func_logger else logger
-        effective_logger.exception(f"Error processing {func_name}")
+        effective_logger.exception(f"Error processing {module_location}")
         
-        logger.error(f"Error processing {func_name} (see {log_filename}): {e}")
-        status_dict[func_name]["status"] = f"Error: {str(e)}"
+        logger.error(f"Error processing {module_location} (see {log_filename}): {e}")
+        status_dict[module_location]["status"] = f"Error: {str(e)}"
         
         if worktree_path:
             async with git_lock:
@@ -417,7 +498,7 @@ def init(
         True, "--interactive/--no-interactive", help="Use AI to interactively design the project structure."
     )
 ):
-    """Initialize the workspace, create AGENT.md, and intelligently build manifest.json."""
+    """Initialize the workspace, create AGENT.md, and intelligently build the module manifest."""
     if config_path is None:
         config_path = find_default_config_path()
 
@@ -505,14 +586,14 @@ def init(
 1.  **Discuss:** Talk with the user about their project idea. Ask clarifying questions to understand the requirements, scope, and desired technologies.
 2.  **Plan:** Propose a plan that includes:
     *   A file and directory structure.
-    *   A list of core functions or components for the manifest.
+    *   A list of core modules for the manifest, including dependencies between them.
     *   Any necessary Python dependencies for `requirements.txt`.
     *   A brief project description for `README.md`.
     *   Any necessary entries for `.gitignore`.
 3.  **Execute:** Once the user approves your plan, use your tools to create or modify the project files. You have the `read_file` and `write_file` tools. If a file already exists, read it first to decide if you should append or overwrite.
 
 **Key Files to Create/Modify:**
-*   `{manifest_path}`: A JSON file defining the functions to be built. This is your primary output for the build system and should list each function that we need to build, its expected inputs, outputs, and functionality. As well as any other important details. One function per element in the JSON file. All functions that we require must be saved to this file. 
+*   `{manifest_path}`: A JSON file defining the modules to be built. This is your primary output for the build system. Each element in the JSON array represents one Python module file to be created.
 *   `AGENT.md`: A markdown file with high-level instructions for the other AI agents (e.g., language, coding standards).
 *   `requirements.txt`: Add the Python dependencies needed for the project.
 *   `README.md`: Create a basic README file for the project.
@@ -521,21 +602,14 @@ def init(
 **Example manifest.json file:**
 [
             {{
-                "function_name": "calculate_discount",
-                "description": "Calculates a final price given a base price and a discount percentage.",
+                "location": "src/utils.py",
+                "description": "Utility functions for data processing and validation.",
+                "dependencies": []
+            }},
+            {{
                 "location": "src/pricing.py",
-                "inputs": [
-                    {{"name": "price", "type": "float", "description": "The base price."}},
-                    {{"name": "discount", "type": "float", "description": "The discount percentage, as a float (e.g., 0.10 for 10%)."}}
-                ],
-                "outputs": [
-                    {{"name": "final_price", "type": "float", "description": "The price after applying the discount."}}
-                ],
-                "functionality": [
-                    "Takes a price and a discount percentage.",
-                    "Calculates the final price.",
-                    "Returns the final price."
-                ]
+                "description": "Core pricing logic. Contains functions to calculate discounts and apply them to products. Depends on src/utils.py for input validation.",
+                "dependencies": ["src/utils.py"]
             }}
         ]
 
@@ -598,26 +672,19 @@ def init(
     if not manifest_created and not manifest_path.exists():
         dummy_manifest = [
             {
-                "function_name": "calculate_discount",
-                "description": "Calculates a final price given a base price and a discount percentage.",
-                "location": "src/pricing.py",
-                "inputs": [
-                    {"name": "price", "type": "float", "description": "The base price."},
-                    {"name": "discount", "type": "float", "description": "The discount percentage, as a float (e.g., 0.10 for 10%)."}
-                ],
-                "outputs": [
-                    {"name": "final_price", "type": "float", "description": "The price after applying the discount."}
-                ],
-                "functionality": [
-                    "Takes a price and a discount percentage.",
-                    "Calculates the final price.",
-                    "Returns the final price."
-                ]
+                "location": "src/utils.py",
+                "description": "A module for shared utility functions, like data validation or formatting.",
+                "dependencies": []
+            },
+            {
+                "location": "src/main_logic.py",
+                "description": "The main business logic module. It will import and use functions from src/utils.py.",
+                "dependencies": ["src/utils.py"]
             }
         ]
         with open(manifest_path, "w") as f:
             json.dump(dummy_manifest, f, indent=4)
-        console.print(f"[green]Created dummy {manifest_path}. Please edit this to define your functions.[/green]")
+        console.print(f"[green]Created dummy {manifest_path}. Please edit this to define your modules.[/green]")
         logger.info(f"Created dummy manifest file at {manifest_path}.")
 
     console.print("[bold green]✓ Initialization complete. Run `mags-codedev build` to start coding.[/bold green]")
@@ -627,7 +694,7 @@ def init(
 @app.command()
 def build(
     manifest_path: Path = typer.Option(
-        "manifest.json", "--manifest", "-m", help="Path to the manifest JSON file.", exists=True, file_okay=True, dir_okay=False, readable=True, resolve_path=True
+        "manifest.json", "--manifest", "-m", help="Path to the manifest JSON file.", file_okay=True, dir_okay=False, readable=True, resolve_path=True
     ),
     config_path: Optional[Path] = typer.Option(
         None, "--config", "-c", help=_CONFIG_HELP_TEXT, resolve_path=True
@@ -639,7 +706,7 @@ def build(
         False, "--force-fresh", help="Force a fresh build by deleting existing worktrees and branches for pending functions."
     ),
 ):
-    """Build all pending functions in manifest.json using parallel multi-agent LangGraphs."""
+    """Build all pending modules in the manifest using parallel multi-agent LangGraphs."""
     if config_path is None:
         config_path = find_default_config_path()
     elif not config_path.exists():
@@ -664,78 +731,172 @@ def build(
             raise typer.Exit(1)
 
     if not manifest_path.exists():
-        console.print("[red]Error: manifest.json not found. Run `mags-codedev init` first.[/red]")
+        console.print(f"[red]Error: Manifest file not found at '{manifest_path}'. Run `mags-codedev init` first.[/red]")
         raise typer.Exit(1)
         
     with open(manifest_path, "r") as f:
         manifest = json.load(f)
 
     config = load_config(config_path)
-    max_parallel = config.get("settings", {}).get("max_parallel_functions", 4)
+    max_parallel = config.get("settings", {}).get("max_parallel_modules", 4)
     
-    # Check DB for already completed functions
     init_db()
-    pending_functions = {}
-    for spec in manifest:
-        name = spec.get("function_name")
-        if not name:
-            console.print(f"[yellow]Warning: Skipping manifest entry with no 'function_name': {spec}[/yellow]")
-            continue
-        if not is_function_built(spec):
-            pending_functions[name] = spec
-            
-    if not pending_functions:
-        console.print("[green]All functions in manifest are already built and verified![/green]")
+    
+    # Create a map for easy lookup and get all initially built functions
+    module_map = {spec['location']: spec for spec in manifest if 'location' in spec}
+    built_modules = {loc for loc, spec in module_map.items() if is_function_built(spec)}
+
+    if len(built_modules) == len(module_map):
+        console.print("[green]All modules in manifest are already built and verified![/green]")
         raise typer.Exit(0)
 
-    console.print(f"[cyan]Found {len(pending_functions)} pending functions. Building up to {max_parallel} concurrently...[/cyan]")
+    console.print(f"[cyan]Found {len(module_map)} total modules. {len(built_modules)} already built.[/cyan]")
 
     # Run the async loop
     async def run_builds():
-        status_dict = {name: {"status": "Pending...", "iterations": 0} for name in pending_functions}
-        semaphore = asyncio.Semaphore(max_parallel)
-        git_lock = asyncio.Lock() # Prevents race conditions during merge
+        nonlocal built_modules # We will modify this set
         
-        with Live(generate_status_table(status_dict), refresh_per_second=4) as live:
-            async def update_ui_loop():
-                while True:
-                    live.update(generate_status_table(status_dict))
-                    await asyncio.sleep(0.25)
+        # This dict will persist across build waves, holding status for all modules.
+        status_dict = {
+            loc: {
+                "status": "Pending",
+                "iterations": 0,
+                "hash": hash_spec(spec),
+                "step": "-"
+            }
+            for loc, spec in module_map.items()
+        }
 
-            build_tasks = [
-                process_function(name, spec, status_dict, semaphore, git_lock, config_path, force_fresh=force_fresh) 
-                for name, spec in pending_functions.items()
-            ]
+        # Main build loop to handle dependencies
+        while len(built_modules) < len(module_map):
+            # 1. Update statuses based on what's already built
+            for loc in built_modules:
+                status_dict[loc]['status'] = "Completed"
+                status_dict[loc]['step'] = "Done"
+
+            # Find functions that are not built yet
+            unbuilt_modules = {loc: spec for loc, spec in module_map.items() if loc not in built_modules}
             
-            ui_task = asyncio.create_task(update_ui_loop())
-            await asyncio.gather(*build_tasks)
-            ui_task.cancel()
-            # Force one final update to ensure the table reflects the completion state
-            # of the tasks before the Live context exits.
-            live.update(generate_status_table(status_dict))
+            # Determine which of the unbuilt functions are ready to be built
+            buildable_now = {
+                loc: spec for loc, spec in unbuilt_modules.items()
+                if all(dep in built_modules for dep in spec.get("dependencies", []))
+            }
             
-        # Check for failures after the loop
-        failures = [name for name, info in status_dict.items() if "Success" not in info["status"]]
-        if failures:
-            console.print(f"\n[bold red]Build cycle completed with {len(failures)} failure(s):[/bold red]")
-            for name in failures:
-                info = status_dict[name]
-                console.print(f"  - [red]{name}[/red]")
-                if info.get("worktree") and os.path.exists(info["worktree"]):
-                    console.print(f"    Worktree: [blue]{info['worktree']}[/blue]")
-                console.print(f"    Log: [blue]{info.get('log_file')}[/blue]")
-                console.print(f"    Status: {info['status']}")
-            raise typer.Exit(1)
-        else:
-            console.print("[bold green]Build cycle complete! All functions built successfully.[/bold green]")
+            # Update statuses for waiting modules
+            for loc, spec in unbuilt_modules.items():
+                if loc not in buildable_now:
+                    missing_deps = [dep for dep in spec.get("dependencies", []) if dep not in built_modules]
+                    status_dict[loc]['status'] = f"Waiting for: {', '.join(missing_deps)}"
+                    status_dict[loc]['step'] = "Waiting"
+
+            if not buildable_now:
+                # Render final table before erroring out
+                console.print(generate_status_table(status_dict))
+                console.print("\n[bold red]Error: Circular dependency or missing dependency detected.[/bold red]")
+                console.print("The following modules could not be built because their dependencies are not met:")
+                for loc, spec in unbuilt_modules.items():
+                    missing_deps = [dep for dep in spec.get("dependencies", []) if dep not in built_modules]
+                    if missing_deps:
+                        console.print(f"- [yellow]{loc}[/yellow] (missing: {', '.join(missing_deps)})")
+                raise typer.Exit(1)
+
+            console.print(f"\n[bold magenta]Starting build wave: {len(buildable_now)} module(s) ready.[/bold magenta]")
+
+            semaphore = asyncio.Semaphore(max_parallel)
+            git_lock = asyncio.Lock()
+
+            with Live(generate_status_table(status_dict), refresh_per_second=4) as live:
+            with Live(generate_status_table(status_dict, module_map), refresh_per_second=4) as live:
+                async def update_ui_loop():
+                    while True:
+                        # Re-sort the dictionary for consistent display order
+                        sorted_status = dict(sorted(status_dict.items()))
+                        live.update(generate_status_table(sorted_status))
+                        live.update(generate_status_table(sorted_status, module_map))
+                        await asyncio.sleep(0.25)
+
+                build_tasks = [
+                    process_module(loc, spec, status_dict, semaphore, git_lock, config_path, force_fresh=force_fresh) 
+                    for loc, spec in buildable_now.items()
+                ]
+                ui_task = asyncio.create_task(update_ui_loop())
+                await asyncio.gather(*build_tasks)
+                ui_task.cancel()
+                live.update(generate_status_table(status_dict))
+                live.update(generate_status_table(status_dict, module_map))
+            
+            # After the wave, check for successes and failures for the modules in this wave
+            wave_failures = []
+            wave_successes = []
+            for loc in buildable_now:
+                info = status_dict[loc]
+                if "Success" in info["status"]:
+                    wave_successes.append(loc)
+                else:
+                    wave_failures.append(loc)
+            
+            built_modules.update(wave_successes)
+            
+            if wave_failures:
+                console.print(f"\n[bold red]Build wave completed with {len(wave_failures)} failure(s):[/bold red]")
+                for loc in wave_failures:
+                    info = status_dict[loc]
+                    console.print(f"  - [red]{loc}[/red]")
+                    if info.get("worktree") and os.path.exists(info["worktree"]):
+                        console.print(f"    Worktree: [blue]{info['worktree']}[/blue]")
+                    console.print(f"    Log: [blue]{info.get('log_file')}[/blue]")
+                    console.print(f"    Status: {info['status']}")
+                console.print("\n[bold red]Aborting build due to failures in the current wave.[/bold red]")
+                raise typer.Exit(1)
+        
+        # This part is outside the while loop
+        console.print("\n[bold green]Build cycle complete! All modules built successfully.[/bold green]")
 
     asyncio.run(run_builds())
 
 
 @app.command()
+def test(
+    config_path: Optional[Path] = typer.Option(
+        None, "--config", "-c", help=_CONFIG_HELP_TEXT, resolve_path=True
+    ),
+):
+    """Run all pytest unit tests for the project in the configured environment."""
+    if config_path is None:
+        config_path = find_default_config_path()
+    elif not config_path.exists():
+        console.print(f"[red]Error: Specified config file not found at '{config_path}'[/red]")
+        raise typer.Exit(1)
+
+    from mags_codedev.utils.docker_ops import run_command_in_project_env
+
+    console.print(Panel("[bold cyan]Running Project Unit Tests...[/bold cyan]"))
+    logger.info("Starting project-wide test run.")
+
+    # The command to run pytest. Pytest will discover tests automatically.
+    command = "pytest -v"
+    
+    # The project root is the current working directory
+    project_root = os.getcwd()
+
+    # Use a spinner while tests are running
+    with console.status("[bold green]Running tests...[/bold green]", spinner="dots"):
+        results = run_command_in_project_env(command, config_path, project_root, logger)
+    
+    console.print(Panel(results, title="Test Results", border_style="blue"))
+    
+    if "failed" in results.lower() or "error" in results.lower():
+        console.print("[bold red]Some tests failed or errors occurred.[/bold red]")
+        raise typer.Exit(code=1)
+    else:
+        console.print("[bold green]All tests passed![/bold green]")
+
+
+@app.command()
 def debug(
     error_msg: str = typer.Argument(..., help="The error trace to fix, or a path to the error trace logfile."),
-    function_name: Optional[str] = typer.Option(None, "--function", "-f", help="The function name in manifest.json to apply the fix to. (Optional if providing a log file)"),
+    module_location: Optional[str] = typer.Option(None, "--module", "-m", help="The module location in manifest.json to apply the fix to. (Optional if providing a log file)"),
     manifest_path: Path = typer.Option(
         "manifest.json", "--manifest", "-m", help="Path to the manifest JSON file."
     ),
@@ -743,7 +904,7 @@ def debug(
         None, "--config", "-c", help=_CONFIG_HELP_TEXT, resolve_path=True
     ),
 ):
-    """Pass an error trace or bug description to the LLM for automatic fixing."""
+    """Pass an error trace or bug description to the LLM for automatic fixing of a module."""
     if config_path is None:
         config_path = find_default_config_path()
     elif not config_path.exists():
@@ -785,32 +946,32 @@ def debug(
                 break
 
     # Auto-detect function from log file if not provided
-    if is_log_file and not function_name:
+    if is_log_file and not module_location:
         try:
             log_hash = Path(log_file_path).stem
             # Check if the stem looks like a sha256 hash
             if len(log_hash) == 64 and all(c in '0123456789abcdef' for c in log_hash):
                 if not manifest_path.exists():
-                    console.print(f"[yellow]Manifest '{manifest_path}' not found. Cannot auto-detect function from log.[/yellow]")
+                    console.print(f"[yellow]Manifest '{manifest_path}' not found. Cannot auto-detect module from log.[/yellow]")
                 else:
                     with open(manifest_path, "r") as f:
                         manifest = json.load(f)
                     for spec in manifest:
                         if hash_spec(spec) == log_hash:
-                            function_name = spec.get("function_name")
-                            if function_name:
-                                console.print(f"[cyan]Auto-detected function '[bold]{function_name}[/bold]' from log file.[/cyan]")
+                            module_location = spec.get("location")
+                            if module_location:
+                                console.print(f"[cyan]Auto-detected module '[bold]{module_location}[/bold]' from log file.[/cyan]")
                                 break
         except Exception as e:
             # This is a convenience feature, so don't crash if it fails.
-            logger.warning(f"Could not auto-detect function from log file: {e}")
+            logger.warning(f"Could not auto-detect module from log file: {e}")
 
     logger.info(f"Using configuration: {config_path}")
     logger.info(f"Using manifest: {manifest_path}")
     console.print(Panel(f"[bold red]Debugging Error:[/bold red]\n{error_msg}"))
     
     # Scenario A: Function name is now known (either provided or detected)
-    if function_name:
+    if module_location:
         if not manifest_path.exists():
             console.print(f"[red]Manifest '{manifest_path}' not found.[/red]")
             raise typer.Exit(1)
@@ -818,21 +979,21 @@ def debug(
         with open(manifest_path, "r") as f:
             manifest = json.load(f)
             
-        spec = next((s for s in manifest if s.get("function_name") == function_name), None)
+        spec = next((s for s in manifest if s.get("location") == module_location), None)
             
         if not spec:
-            console.print(f"[red]Function '{function_name}' not found in manifest.[/red]")
+            console.print(f"[red]Module '{module_location}' not found in manifest.[/red]")
             raise typer.Exit(1)
             
-        console.print(f"[cyan]Attempting to fix {function_name} based on the error...[/cyan]")
+        console.print(f"[cyan]Attempting to fix {module_location} based on the error...[/cyan]")
         
         async def run_fix(error_to_fix: str):
             # Create a dummy status dict for the helper
-            status = {function_name: {"status": "Starting Fix...", "iterations": 0, "hash": "debug", "log_file": ".MAGS-CodeDev/debug.log"}}
+            status = {module_location: {"status": "Starting Fix...", "iterations": 0, "hash": "debug", "log_file": ".MAGS-CodeDev/debug.log"}}
             sem = asyncio.Semaphore(1)
             lock = asyncio.Lock()
             console.print("[yellow]Running fix workflow with provided error...[/yellow]")
-            await process_function(function_name, spec, status, sem, lock, config_path, initial_error=error_to_fix)
+            await process_module(module_location, spec, status, sem, lock, config_path, initial_error=error_to_fix)
             
         asyncio.run(run_fix(error_msg))
         
@@ -845,7 +1006,7 @@ def debug(
         llm.callbacks = [TokenLoggingCallbackHandler(role="command_debug", model_name=model_name)]
 
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are an expert debugger. Analyze the error provided. Explain the likely cause and suggest which file or function is likely responsible."),
+            ("system", "You are an expert debugger. Analyze the error provided. Explain the likely cause and suggest which file or module is likely responsible."),
             ("human", "{input}")
         ])
         chain = prompt | llm

@@ -1,6 +1,6 @@
 from langgraph.constants import END, START
 from langgraph.graph import StateGraph
-from mags_codedev.state import FunctionState
+from mags_codedev.state import ModuleState
 
 # Import placeholder agent and utility nodes. 
 # (We will implement these in the agents/ and utils/ directories next)
@@ -12,10 +12,10 @@ from mags_codedev.agents.reviewer import multi_llm_review_node
 
 def build_function_graph():
     """
-    Constructs the LangGraph state machine for processing a single function.
-    This graph will be executed in parallel for multiple functions.
+    Constructs the LangGraph state machine for processing a single module.
+    This graph will be executed in parallel for multiple modules.
     """
-    workflow = StateGraph(FunctionState)
+    workflow = StateGraph(ModuleState)
     
     # ---------------------------------------------------------
     # 1. Define Nodes (Agents and Tools)
@@ -50,7 +50,7 @@ def build_function_graph():
     # ---------------------------------------------------------
     
     # A. Evaluate Docker Test Results
-    def evaluate_test_results(state: FunctionState) -> str:
+    def evaluate_test_results(state: ModuleState) -> str:
         if state["iteration_count"] >= state["max_iterations"]:
             return "max_iterations_reached"
             
@@ -73,7 +73,7 @@ def build_function_graph():
     workflow.add_edge("run_linters", "log_checker")
 
     # B. Evaluate Logs (Diagnostic Phase)
-    def evaluate_logs(state: FunctionState) -> str:
+    def evaluate_logs(state: ModuleState) -> str:
         if state["iteration_count"] >= state["max_iterations"]:
             return "max_iterations_reached"
             
@@ -96,7 +96,7 @@ def build_function_graph():
     )
 
     # C. Multi-LLM Review Phase
-    def evaluate_reviews(state: FunctionState) -> str:
+    def evaluate_reviews(state: ModuleState) -> str:
         if state["iteration_count"] >= state["max_iterations"]:
             return "max_iterations_reached"
             

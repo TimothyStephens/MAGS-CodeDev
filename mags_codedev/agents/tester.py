@@ -1,11 +1,11 @@
 import logging
 from langchain_core.prompts import ChatPromptTemplate
 from pathlib import Path
-from mags_codedev.state import FunctionState
+from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import get_llm
 from mags_codedev.utils.logger import logger
 
-def tester_node(state: FunctionState) -> dict:
+def tester_node(state: ModuleState) -> dict:
     """Writes comprehensive unit tests using pytest."""
     config_path = state["config_path"]
     llm = get_llm(role="tester", config_path=config_path)
@@ -19,26 +19,27 @@ def tester_node(state: FunctionState) -> dict:
         func_logger = logger
     
     # Determine the correct import path from the project root to guide the LLM
-    source_location = state['spec']['location']
+    source_location = state['module_location']
     # e.g., "src/utils/helpers.py" -> "src.utils.helpers"
     module_path = Path(source_location).with_suffix('').as_posix().replace('/', '.')
-    import_instruction = f"To import the function, use a statement like `from {module_path} import {state['function_name']}`."
+    import_instruction = f"The module to test is '{source_location}'. You can import from it using `from {module_path} import ...`."
 
     # Check if we are in a fix cycle for tests
     is_fix = bool(state.get("error_summary")) and state.get("error_location") == "TEST_CODE"
     
     system_prompt = f"""You are a strict QA Automation Engineer.
-    Write robust `pytest` unit tests for the provided Python code.
+    Write robust `pytest` unit tests for the provided Python module.
     The code is part of a larger project, so ensure imports are correct.
     {import_instruction}
+    Your tests should cover all functions and classes in the module.
     Include edge cases, type boundary checks, and failure scenarios.
-    The code to be tested is located at the path specified in the 'location' field of the spec.
+    The module to be tested is located at the path '{source_location}'.
     Return ONLY valid Python code for the test file. Do not include markdown formatting."""
 
     if is_fix:
         human_template = """The previous attempt to write tests failed. Please fix them.
         
-Function Specification:
+Module Specification:
 {spec}
 
 Generated Code to Test:
@@ -58,7 +59,7 @@ Your task is to provide a new, corrected version of the pytest unit tests."""
             "error_summary": state['error_summary']
         }
     else:
-        human_template = """Function Specification:
+        human_template = """Module Specification:
 {spec}
 
 Generated Code to Test:
@@ -73,7 +74,7 @@ Generated Code to Test:
         ("human", human_template)
     ])
     
-    func_logger.info(f"Tester: Sending prompt for '{state['function_name']}'.")
+    func_logger.info(f"Tester: Sending prompt for '{state['module_location']}'.")
     func_logger.debug(f"Tester Prompt:\n{prompt.format(**invoke_params)}")
 
     chain = prompt | llm
@@ -91,6 +92,14 @@ Generated Code to Test:
             for block in content
         )
 
+    # The LLM may wrap the code in markdown blocks or add extraneous text. Extract the code.
+    response_content = str(content).strip()
+    if "```python" in response_content:
+        response_content = response_content.split("```python")[1].split("```")[0].strip()
+    elif "```" in response_content:
+        # Fallback for ``` with no language specified
+        response_content = response_content.split("```")[1].split("```")[0].strip()
+
     return {
-        "tests": str(content).strip(),
+        "tests": response_content + "\n",
     }

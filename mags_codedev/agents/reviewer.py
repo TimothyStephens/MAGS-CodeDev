@@ -1,11 +1,11 @@
 import asyncio
 import logging
 from langchain_core.prompts import ChatPromptTemplate
-from mags_codedev.state import FunctionState
+from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import get_reviewer_llms
 from mags_codedev.utils.logger import logger
 
-async def _get_review(llm, state: FunctionState) -> str:
+async def _get_review(llm, state: ModuleState) -> str:
     """Helper function to execute a single review asynchronously."""
     model_name = getattr(llm, 'model_name', getattr(llm, 'model', 'unknown'))
     
@@ -27,7 +27,7 @@ async def _get_review(llm, state: FunctionState) -> str:
         ("human", human_template)
     ])
     
-    func_logger.info(f"Reviewer ({model_name}): Sending prompt for '{state['function_name']}'.")
+    func_logger.info(f"Reviewer ({model_name}): Sending prompt for '{state['module_location']}'.")
     # The debug log will go to the file, not the console, per logger.py setup
     func_logger.debug(f"Reviewer Prompt for {model_name}:\n{prompt.format(spec=str(state['spec']), code=state['code'])}")
     
@@ -38,9 +38,17 @@ async def _get_review(llm, state: FunctionState) -> str:
     })
 
     func_logger.debug(f"Reviewer ({model_name}) Response:\n{response.content}")
-    return response.content
+    content = response.content
+    if isinstance(content, list):
+        content = "".join(
+            block if isinstance(block, str) else 
+            block.get("text", "") if isinstance(block, dict) else 
+            getattr(block, "text", str(block))
+            for block in content
+        )
+    return str(content)
 
-async def multi_llm_review_node(state: FunctionState) -> dict:
+async def multi_llm_review_node(state: ModuleState) -> dict:
     """Runs multiple LLMs concurrently to review the final code."""
     config_path = state["config_path"]
     llms = get_reviewer_llms(config_path=config_path) # Returns a list of configured models

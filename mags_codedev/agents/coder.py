@@ -1,11 +1,11 @@
 import logging
 from langchain_core.prompts import ChatPromptTemplate
-from mags_codedev.state import FunctionState
+from mags_codedev.state import ModuleState
 # (Assuming a helper function that loads the configured LLM for a specific role)
 from mags_codedev.utils.config_parser import get_llm
 from mags_codedev.utils.logger import logger
 
-def coder_node(state: FunctionState) -> dict:
+def coder_node(state: ModuleState) -> dict:
     """Generates or updates the code based on specifications and feedback."""
     config_path = state["config_path"]
     llm = get_llm(role="coder", config_path=config_path)
@@ -33,7 +33,7 @@ def coder_node(state: FunctionState) -> dict:
     # Determine context based on whether this is a first run or a fix
     is_fix = state.get("iteration_count", 0) > 0
     feedback = ""
-    prompt_narrative = "Write the initial implementation of this function."
+    prompt_narrative = "Write the initial implementation of this Python module."
     
     # Build the feedback block for fixes or provide existing code for updates.
     if is_fix:
@@ -50,15 +50,15 @@ def coder_node(state: FunctionState) -> dict:
         
         feedback = "\n\n".join(feedback_parts)
     elif state.get("code"): # This is an update of existing code, not a fix in this run
-        prompt_narrative = "Update the following function based on the specification."
+        prompt_narrative = "Update the following module based on the specification."
         feedback = f"EXISTING CODE:\n{state.get('code', '')}"
         
     system_prompt = """You are an expert Software Engineer.
-    Write clean, production-ready Python code. Follow all instructions exactly.
-    Return ONLY valid Python code. Do not include markdown formatting like ```python."""
+    Write a full, clean, production-ready Python module. Follow all instructions exactly.
+    Return ONLY valid Python code for the entire file. Do not include markdown formatting like ```python."""
 
     human_template = """
-    Function Name: {function_name}
+    Module Location: {module_location}
     Specification: {spec}
     
     {prompt_narrative}
@@ -71,12 +71,12 @@ def coder_node(state: FunctionState) -> dict:
         ("human", human_template)
     ])
     
-    func_logger.info(f"Coder: Sending prompt for '{state['function_name']}' (iteration {state.get('iteration_count', 0) + 1}).")
-    func_logger.debug(f"Coder Prompt:\n{prompt.format(function_name=state['function_name'], spec=str(state['spec']), prompt_narrative=prompt_narrative, feedback=feedback)}")
+    func_logger.info(f"Coder: Sending prompt for '{state['module_location']}' (iteration {state.get('iteration_count', 0) + 1}).")
+    func_logger.debug(f"Coder Prompt:\n{prompt.format(module_location=state['module_location'], spec=str(state['spec']), prompt_narrative=prompt_narrative, feedback=feedback)}")
 
     chain = prompt | llm
     response = chain.invoke({
-        "function_name": state['function_name'],
+        "module_location": state['module_location'],
         "spec": str(state['spec']),
         "prompt_narrative": prompt_narrative,
         "feedback": feedback
@@ -94,8 +94,16 @@ def coder_node(state: FunctionState) -> dict:
             for block in content
         )
 
+    # The LLM may wrap the code in markdown blocks or add extraneous text. Extract the code.
+    response_content = str(content).strip()
+    if "```python" in response_content:
+        response_content = response_content.split("```python")[1].split("```")[0].strip()
+    elif "```" in response_content:
+        # Fallback for ``` with no language specified
+        response_content = response_content.split("```")[1].split("```")[0].strip()
+
     return {
-        "code": str(content).strip(),
+        "code": response_content + "\n",
         # Increment the iteration counter
         "iteration_count": state.get("iteration_count", 0) + 1,
         "review_comments": []

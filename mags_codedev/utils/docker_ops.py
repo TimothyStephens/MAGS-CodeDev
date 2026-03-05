@@ -4,7 +4,7 @@ import os
 import json
 import subprocess
 from pathlib import Path
-from mags_codedev.state import FunctionState
+from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import load_config
 from mags_codedev.utils.logger import logger
 
@@ -65,7 +65,7 @@ From: {base_image}
 {chr(10).join(post_section)}
 """.strip()
 
-def _run_with_docker(state: FunctionState, command: str, config: dict, func_logger: logging.Logger) -> str:
+def _run_with_docker(state: dict, command: str, config: dict, func_logger: logging.Logger) -> str:
     """Runs a command inside a Docker container, building the image if necessary."""
     try:
         client = docker.from_env()
@@ -119,8 +119,7 @@ def _run_with_docker(state: FunctionState, command: str, config: dict, func_logg
         finally:
             if temp_dockerfile_path.exists():
                 temp_dockerfile_path.unlink()
-
-    timeout_mins = config.get("settings", {}).get("timeout_per_function_mins", 15)
+    timeout_mins = config.get("settings", {}).get("timeout_per_module_mins", 15)
     timeout_seconds = timeout_mins * 60
     worktree_path = state["worktree_path"]
     container = None
@@ -163,10 +162,10 @@ def _run_with_docker(state: FunctionState, command: str, config: dict, func_logg
         if container:
             container.remove(force=True)
 
-def _run_with_apptainer(state: FunctionState, command: str, config: dict, func_logger: logging.Logger) -> str:
+def _run_with_apptainer(state: dict, command: str, config: dict, func_logger: logging.Logger) -> str:
     """Runs a command inside an Apptainer container, building the image if necessary."""
     image_name = config.get("settings", {}).get("apptainer_test_image", "mags-dev-env.sif")
-    timeout_mins = config.get("settings", {}).get("timeout_per_function_mins", 15)
+    timeout_mins = config.get("settings", {}).get("timeout_per_module_mins", 15)
     timeout_seconds = timeout_mins * 60
     worktree_path = state["worktree_path"]
     
@@ -246,9 +245,9 @@ def _run_with_apptainer(state: FunctionState, command: str, config: dict, func_l
         func_logger.exception("Apptainer execution error")
         return err_msg
 
-def _run_locally(state: FunctionState, command: str, config: dict, func_logger: logging.Logger) -> str:
+def _run_locally(state: dict, command: str, config: dict, func_logger: logging.Logger) -> str:
     """Runs a command in the local environment."""
-    timeout_mins = config.get("settings", {}).get("timeout_per_function_mins", 15)
+    timeout_mins = config.get("settings", {}).get("timeout_per_module_mins", 15)
     timeout_seconds = timeout_mins * 60
     worktree_path = state["worktree_path"]
 
@@ -280,7 +279,7 @@ def _run_locally(state: FunctionState, command: str, config: dict, func_logger: 
         func_logger.exception("Local execution error")
         return err_msg
 
-def _run_in_environment(state: FunctionState, command: str) -> str:
+def _run_in_environment(state: ModuleState, command: str) -> str:
     """Helper to run a command in the configured environment (docker, apptainer, or local)."""
     code, tests = state["code"], state["tests"]
     config_path, worktree_path = state["config_path"], state["worktree_path"]
@@ -337,14 +336,42 @@ def _run_in_environment(state: FunctionState, command: str) -> str:
         func_logger.error(err_msg)
         return err_msg
 
-def test_node(state: FunctionState) -> dict:
+def run_command_in_project_env(command: str, config_path: Path, project_root: str, func_logger: logging.Logger) -> str:
+    """Helper to run a command in the configured environment against the whole project."""
+    config = load_config(config_path)
+    runner = config.get("settings", {}).get("test_runner", "docker").lower()
+
+    # Create a mock state-like object for the runner functions
+    mock_state = {"worktree_path": project_root}
+
+    # The command to run inside the environment.
+    # Dependencies are baked into the image for container runners.
+    full_command = command
+
+    if runner == "docker":
+        return _run_with_docker(mock_state, full_command, config, func_logger)
+    elif runner == "apptainer":
+        return _run_with_apptainer(mock_state, full_command, config, func_logger)
+    elif runner == "local":
+        # For local, we still need to install dependencies.
+        install_deps_cmd = "pip install -r requirements.txt && " if os.path.exists(os.path.join(project_root, "requirements.txt")) else ""
+        # Also install core deps if running locally
+        install_core_cmd = "pip install pytest flake8 mypy && "
+        return _run_locally(mock_state, f"{install_core_cmd}{install_deps_cmd}{command}", config, func_logger)
+    else:
+        err_msg = f"Invalid test_runner '{runner}' in config.yaml. Must be 'docker', 'apptainer', or 'local'."
+        logger.error(err_msg)
+        func_logger.error(err_msg)
+        return err_msg
+
+def test_node(state: ModuleState) -> dict:
     """LangGraph node: Executes pytest in the configured environment."""
     # Use Path(...).as_posix() to ensure forward slashes for Linux container commands
     test_file = Path(state["test_location"]).as_posix()
     logs = _run_in_environment(state, f"pytest {test_file} -v")
     return {"test_results": logs}
 
-def linter_node(state: FunctionState) -> dict:
+def linter_node(state: ModuleState) -> dict:
     """LangGraph node: Executes flake8 and mypy in the configured environment."""
     target_file = Path(state["spec"]["location"]).as_posix()
     # The command is structured to run mypy even if flake8 fails.

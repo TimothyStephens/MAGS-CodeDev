@@ -75,13 +75,22 @@ def merge_and_cleanup_worktree(branch_name: str, worktree_path: str, success: bo
     
     if success:
         try:
+            repo = git.Repo(os.getcwd())
+            # Determine base branch
+            base_branch = "main"
+            if "main" not in repo.heads and "master" in repo.heads:
+                base_branch = "master"
+
             # Checkout main and merge
             # We use check=True to catch merge conflicts
-            subprocess.run(["git", "checkout", "main"], check=True, capture_output=True)
-            subprocess.run(["git", "merge", "--no-ff", "-m", f"feat: Merge function '{branch_name}'", branch_name], check=True, capture_output=True)
+            # First checkout main
+            subprocess.run(["git", "checkout", base_branch], check=True, capture_output=True)
+            # Then attempt merge
+            subprocess.run(["git", "merge", "--no-ff", "-m", f"feat: Merge module '{branch_name}'", branch_name], check=True, capture_output=True)
             merge_success = True
-        except subprocess.CalledProcessError:
-            print(f"\n[!] Merge conflict for {branch_name}. Branch preserved for manual resolution.")
+        except subprocess.CalledProcessError as e:
+            cmd = " ".join(e.cmd) if isinstance(e.cmd, list) else e.cmd
+            print(f"\n[!] Git operation failed during merge phase for {branch_name}.\n    Command: {cmd}\n    Error: {e.stderr.decode('utf-8', errors='replace').strip() if e.stderr else 'Unknown'}")
             # We do NOT set merge_success to True, so the branch won't be deleted below
 
     # Cleanup logic:
