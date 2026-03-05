@@ -51,7 +51,8 @@ def build_function_graph():
     
     # A. Evaluate Docker Test Results
     def evaluate_test_results(state: ModuleState) -> str:
-        if state["iteration_count"] >= state["max_iterations"]:
+        max_iters = state.get("max_iterations", 5)
+        if max_iters > 0 and state["iteration_count"] >= max_iters:
             return "max_iterations_reached"
             
         # The test_node will populate state["test_results"]
@@ -74,7 +75,8 @@ def build_function_graph():
 
     # B. Evaluate Logs (Diagnostic Phase)
     def evaluate_logs(state: ModuleState) -> str:
-        if state["iteration_count"] >= state["max_iterations"]:
+        max_iters = state.get("max_iterations", 5)
+        if max_iters > 0 and state["iteration_count"] >= max_iters:
             return "max_iterations_reached"
             
         # If the log checker populates an error_summary, route to the correct fixer
@@ -97,7 +99,8 @@ def build_function_graph():
 
     # C. Multi-LLM Review Phase
     def evaluate_reviews(state: ModuleState) -> str:
-        if state["iteration_count"] >= state["max_iterations"]:
+        max_iters = state.get("max_iterations", 5)
+        if max_iters > 0 and state["iteration_count"] >= max_iters:
             return "max_iterations_reached"
             
         # If reviewers aggregated actionable comments, send back to Coder to revise

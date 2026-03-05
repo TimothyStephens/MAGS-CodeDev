@@ -59,4 +59,4 @@ settings:
   docker_test_image: "mags-dev-env:latest"                # Name for the Docker test image. Will be built automatically if not found.
   apptainer_test_image: "mags-dev-env.sif"                # Name for the Apptainer test image. Will be built automatically if not found.
   timeout_per_module_mins: 15                             # Max time before a LangGraph run aborts
-  max_iterations: 5                                       # Max number of fix attempts before aborting
+  max_iterations: 5                                       # Max number of fix attempts before aborting. Set to 0 for unlimited.

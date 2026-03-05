@@ -436,7 +436,10 @@ async def process_module(module_location: str, spec: dict, status_dict: dict, se
                 await asyncio.to_thread(add_iterations_to_module, module_location, iterations_this_run)
 
             # Determine success based on the state
-            max_iter_reached = final_state.get("iteration_count", 0) >= final_state.get("max_iterations", 5)
+            max_iters = final_state.get("max_iterations", 5)
+            max_iter_reached = False
+            if max_iters > 0:
+                max_iter_reached = final_state.get("iteration_count", 0) >= max_iters
 
             # The graph successfully finishes if it reaches the END node *without* hitting the max iteration limit.
             # All failure paths in the graph that lead to END do so because of max_iterations.
