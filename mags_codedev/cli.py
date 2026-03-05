@@ -8,7 +8,6 @@ import shutil
 import subprocess
 import logging
 import typer
-from typing import Optional
 from typing import Optional, Union
 from rich.console import Console
 from rich.table import Table
@@ -22,7 +21,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 # Import our MAGs-CodeDev modules
 from mags_codedev.state import ModuleState
 from mags_codedev.graph import build_function_graph
-from mags_codedev.utils.db import init_db, is_function_built, mark_function_built, get_token_summary, TokenLoggingCallbackHandler, hash_spec
+from mags_codedev.utils.db import init_db, is_function_built, mark_function_built, get_token_summary, TokenLoggingCallbackHandler, hash_spec, add_iterations_to_module, get_total_iterations
 from mags_codedev.utils.git_ops import create_parallel_worktree, merge_and_cleanup_worktree, validate_git_repo
 from mags_codedev.utils.config_parser import load_config, get_llm, get_reviewer_llms
 from mags_codedev.utils.logger import logger
@@ -99,14 +98,6 @@ def format_llm_error(e: Exception) -> str:
     # If no specific pattern is found, return the original error string.
     return e_str
 
-def generate_status_table(status_dict: dict) -> Table:
-    """Generates a rich table tracking the live status of parallel builds."""
-    table = Table(title="Parallel Function Builder", show_header=True, header_style="bold cyan")
-    table.add_column("Hash", style="dim", width=8)
-    table.add_column("Module", style="white")
-    table.add_column("Step", style="magenta")
-    table.add_column("Status", style="bold")
-    table.add_column("Iterations", justify="center")
 def generate_status_table(status_dict: dict, module_map: Optional[dict] = None) -> Union[Table, Tree]:
     """Generates a rich table or tree tracking the live status of parallel builds."""
     if not module_map:
@@ -118,13 +109,14 @@ def generate_status_table(status_dict: dict, module_map: Optional[dict] = None) 
         table.add_column("Status", style="bold")
         table.add_column("Iterations", justify="center")
 
-    for func_name, info in status_dict.items():
         for func_name, info in status_dict.items():
-            state_color = "yellow"
+            state_color = "blue" # Default for running jobs
             if "Success" in info['status'] or "Completed" in info['status']:
                 state_color = "green"
             elif "Fail" in info['status'] or "Error" in info['status']:
                 state_color = "red"
+            elif "Waiting" in info['status']:
+                state_color = "yellow"
                 
             status_text = info['status']
             if len(status_text) > 60:
@@ -155,40 +147,66 @@ def generate_status_table(status_dict: dict, module_map: Optional[dict] = None) 
     else:
         roots.sort()
 
+    # Calculate max length for alignment accounting for indentation
+    max_tree_width = 0
+    
+    def calculate_max_width(loc, depth, path):
+        nonlocal max_tree_width
+        # Indentation is approx 4 chars per level
+        current_width = ((depth + 1) * 4) + len(loc)
+        if current_width > max_tree_width:
+            max_tree_width = current_width
+            
+        if loc in path: return
+
+        spec = module_map.get(loc, {})
+        deps = spec.get("dependencies", [])
+        new_path = path | {loc}
+        
+        for dep in deps:
+            if dep in module_map:
+                calculate_max_width(dep, depth + 1, new_path)
+
+    for root in roots:
+        calculate_max_width(root, 0, set())
+        
+    # Add buffer
+    max_tree_width += 2
+    
+    # Also for status
+    max_status_len = max((len(info.get("status", "Pending")) for info in status_dict.values()), default=20) if status_dict else 20
+    # And for step
+    max_step_len = max((len(str(info.get("step", "-"))) for info in status_dict.values()), default=10) if status_dict else 10
+
     def add_children(node, loc, path):
         if loc in path:
             node.add(f"[bold red]{loc} (Cycle Detected)[/bold red]")
             return
 
         info = status_dict.get(loc, {})
+        hash_val = f"{info.get('hash', '')[:8]:<8}"
         status = info.get("status", "Pending")
         step = info.get("step", "-")
         iterations = info.get("iterations", 0)
         
-        state_color = "yellow"
-        if "Success" in info['status'] or "Completed" in info['status']:
+        state_color = "blue" # Default for running jobs
         if "Success" in status or "Completed" in status:
             state_color = "green"
-        elif "Fail" in info['status'] or "Error" in info['status']:
         elif "Fail" in status or "Error" in status:
             state_color = "red"
         elif "Waiting" in status:
-            state_color = "dim yellow"
+            state_color = "yellow"
             
-        status_text = info['status']
-        if len(status_text) > 60:
-            status_text = status_text[:57] + "..."
-            
-        table.add_row(
-            info.get('hash', '')[:8],
-            func_name, 
-            info.get('step', '-'),
-            f"[{state_color}]{status_text}[/{state_color}]", 
-            str(info['iterations'])
-        )
-    return table
         # Format: Module - Status (Step, Iter)
-        label = f"[bold white]{loc}[/bold white] : [{state_color}]{status}[/{state_color}] [dim](Step: {step}, Iter: {iterations})[/dim]"
+        # Calculate padding based on depth to align colons
+        depth = len(path)
+        indent_size = (depth + 1) * 4
+        target_len = max(0, max_tree_width - indent_size)
+        
+        padded_loc = f"{loc:<{target_len}}"
+        padded_status = f"{status:<{max_status_len}}"
+        padded_step = f"{step:<{max_step_len}}"
+        label = f"[dim]{hash_val}[/dim] [bold white]{padded_loc}[/bold white] : [{state_color}]{padded_status}[/{state_color}] ([dim]Step: [/dim][purple]{padded_step}[/purple], [dim]Iter: [/dim][bright_blue]{iterations}[/bright_blue])"
         
         branch = node.add(label)
         
@@ -411,6 +429,12 @@ async def process_module(module_location: str, spec: dict, status_dict: dict, se
             
             status_dict[module_location]["step"] = "Complete"
             
+            # Persist the number of iterations from this run to the database
+            iterations_this_run = final_state.get("iteration_count", 0)
+            if iterations_this_run > 0:
+                func_logger.info(f"Run finished with {iterations_this_run} iterations. Updating total in database.")
+                await asyncio.to_thread(add_iterations_to_module, module_location, iterations_this_run)
+
             # Determine success based on the state
             max_iter_reached = final_state.get("iteration_count", 0) >= final_state.get("max_iterations", 5)
 
@@ -773,6 +797,8 @@ def build(
             for loc in built_modules:
                 status_dict[loc]['status'] = "Completed"
                 status_dict[loc]['step'] = "Done"
+                # Get total iterations for completed modules from the database
+                status_dict[loc]['iterations'] = get_total_iterations(loc)
 
             # Find functions that are not built yet
             unbuilt_modules = {loc: spec for loc, spec in module_map.items() if loc not in built_modules}
@@ -801,18 +827,14 @@ def build(
                         console.print(f"- [yellow]{loc}[/yellow] (missing: {', '.join(missing_deps)})")
                 raise typer.Exit(1)
 
-            console.print(f"\n[bold magenta]Starting build wave: {len(buildable_now)} module(s) ready.[/bold magenta]")
-
             semaphore = asyncio.Semaphore(max_parallel)
             git_lock = asyncio.Lock()
 
-            with Live(generate_status_table(status_dict), refresh_per_second=4) as live:
             with Live(generate_status_table(status_dict, module_map), refresh_per_second=4) as live:
                 async def update_ui_loop():
                     while True:
                         # Re-sort the dictionary for consistent display order
                         sorted_status = dict(sorted(status_dict.items()))
-                        live.update(generate_status_table(sorted_status))
                         live.update(generate_status_table(sorted_status, module_map))
                         await asyncio.sleep(0.25)
 
@@ -823,7 +845,6 @@ def build(
                 ui_task = asyncio.create_task(update_ui_loop())
                 await asyncio.gather(*build_tasks)
                 ui_task.cancel()
-                live.update(generate_status_table(status_dict))
                 live.update(generate_status_table(status_dict, module_map))
             
             # After the wave, check for successes and failures for the modules in this wave

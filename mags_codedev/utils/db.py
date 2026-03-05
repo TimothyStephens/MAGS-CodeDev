@@ -31,6 +31,12 @@ def init_db():
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS module_iterations (
+                location TEXT PRIMARY KEY,
+                total_iterations INTEGER DEFAULT 0
+            )
+        """)
         conn.commit()
 
 def hash_spec(spec: dict) -> str:
@@ -50,6 +56,20 @@ def mark_function_built(function_name: str, spec: dict):
         cursor.execute("INSERT OR IGNORE INTO completed_functions (func_hash, function_name) VALUES (?, ?)", 
                        (spec_hash, function_name))
         conn.commit()
+
+def add_iterations_to_module(location: str, count: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO module_iterations (location, total_iterations) VALUES (?, 0)", (location,))
+        cursor.execute("UPDATE module_iterations SET total_iterations = total_iterations + ? WHERE location = ?", (count, location))
+        conn.commit()
+
+def get_total_iterations(location: str) -> int:
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT total_iterations FROM module_iterations WHERE location = ?", (location,))
+        row = cursor.fetchone()
+        return row[0] if row else 0
 
 def log_token_usage(role: str, model: str, in_tokens: int, out_tokens: int):
     with sqlite3.connect(DB_PATH) as conn:
