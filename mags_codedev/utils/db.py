@@ -150,3 +150,7 @@ class TokenLoggingCallbackHandler(BaseCallbackHandler):
 
         if in_tokens > 0 or out_tokens > 0:
             log_token_usage(role=self.role, model=self.model_name, in_tokens=in_tokens, out_tokens=out_tokens)
+
+    def on_llm_error(self, error: BaseException, **kwargs) -> None:
+        """Run when LLM errors. This logs the failure but does not record token usage."""
+        logger.warning(f"LLM call failed for role '{self.role}' (model: {self.model_name}). Error: {error}")

@@ -1,12 +1,50 @@
 import asyncio
 import logging
+import httpx
 from langchain_core.prompts import ChatPromptTemplate
 from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import get_reviewer_llms
 from mags_codedev.utils.logger import logger
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
+from google.genai.errors import ServerError
 
+def _is_retryable_error(exception):
+    """Check if the exception is a transient API error."""
+    # Explicitly handle Google GenAI ServerError
+    if isinstance(exception, ServerError):
+        try:
+            error_details = (getattr(exception, 'response_json', None) or {}).get('error', {})
+            message = error_details.get('message', '').lower()
+            status = error_details.get('status', '').lower()
+            code = error_details.get('code')
+            
+            # Retry on 503 UNAVAILABLE, high demand, or resource exhausted
+            if (code == 503 and status == 'unavailable') or \
+               "high demand" in message or \
+               "resource_exhausted" in message or \
+               "rate limit" in message or \
+               code == 429: # Explicitly check for 429
+                return True
+        except Exception:
+            pass
+            
+    # Explicitly handle httpx.RemoteProtocolError
+    if isinstance(exception, httpx.RemoteProtocolError):
+        return True
+
+    # Fallback for other exceptions that might contain these keywords in their string representation
+    msg = str(exception).lower()
+    return ("503" in msg or "unavailable" in msg or "rate limit" in msg or "429" in msg or "resource_exhausted" in msg
+            or "server disconnected" in msg)
+
+@retry(
+    retry=retry_if_exception(_is_retryable_error),
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=2, min=4, max=60),
+    reraise=True
+)
 async def _get_review(llm, state: ModuleState) -> str:
-    """Helper function to execute a single review asynchronously."""
+    """Helper function to execute a single review asynchronously with retry logic."""
     model_name = getattr(llm, 'model_name', getattr(llm, 'model', 'unknown'))
     
     if state.get("log_filepath"):
