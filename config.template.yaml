@@ -20,7 +20,7 @@ models:
   # ===================================================================
   # These models are used by the `mags-codedev build` command.
   build_workflow:
-    # The heavy lifter. Use your strongest model with the largest token 
+    # The heavy lifter. Use your strongest model with the largest token
     # allowance here (e.g., gpt-4o, claude-3.5-sonnet, gemini-2.5-pro).
     coder:
       provider: "openai"
@@ -29,12 +29,12 @@ models:
     tester:
       provider: "anthropic"
       model: "claude-3-5-sonnet-20240620"
-    
+
     log_checker:
       provider: "google"
       model: "gemini-2.5-pro"
 
-    # Add as many models as you want for code review. The LangGraph will 
+    # Add as many models as you want for code review. The LangGraph will
     # execute these concurrently and aggregate their feedback.
     reviewers:
       - provider: "openai"
@@ -44,19 +44,20 @@ models:
       - provider: "anthropic"
         model: "claude-3-5-sonnet-20240620"
       # Example of a Locally Hosted Model (e.g., Ollama, vLLM, LM Studio)
-      # Uses the 'custom_openai' provider to route through LangChain's ChatOpenAI 
+      # Uses the 'custom_openai' provider to route through LangChain's ChatOpenAI
       # class but points to your local machine's port.
-      - provider: "custom_openai" 
-        model: "llama3:70b"          # The exact model name your local server expects
+      - provider: "custom_openai"
+        model: "llama3:70b" # The exact model name your local server expects
         base_url: "http://localhost:11434/v1" # Standard port for Ollama API
-        api_key: "ollama"            # Dummy key to satisfy the Langchain client
+        api_key: "ollama" # Dummy key to satisfy the Langchain client
 
 settings:
-  test_runner: "docker"                                   # Runner for tests: 'docker', 'apptainer', or 'local'
-  python_base_image: "python:3.11-slim"                   # Base python image for test containers
-  system_dependencies: ["build-essential", "pkg-config"]  # System-level packages to install via apt-get (e.g., ["build-essential", "libpq-dev"])
-  max_parallel_modules: 4                                 # How many modules to build concurrently
-  docker_test_image: "mags-dev-env:latest"                # Name for the Docker test image. Will be built automatically if not found.
-  apptainer_test_image: "mags-dev-env.sif"                # Name for the Apptainer test image. Will be built automatically if not found.
-  timeout_per_module_mins: 15                             # Max time before a LangGraph run aborts
-  max_iterations: 5                                       # Max number of fix attempts before aborting. Set to 0 for unlimited.
+  language: "python" # Target language: 'python' (others coming soon)
+  test_runner: "docker" # Runner for tests: 'docker', 'apptainer', or 'local'
+  python_base_image: "python:3.11-slim" # Override base image (optional; backend provides default)
+  system_dependencies: ["build-essential", "pkg-config"] # System-level packages to install via apt-get (e.g., ["build-essential", "libpq-dev"])
+  max_parallel_modules: 4 # How many modules to build concurrently
+  docker_test_image: "mags-dev-env:latest" # Name for the Docker test image. Will be built automatically if not found.
+  apptainer_test_image: "mags-dev-env.sif" # Name for the Apptainer test image. Will be built automatically if not found.
+  timeout_per_module_mins: 15 # Max time before a LangGraph run aborts
+  max_iterations: 5 # Max number of fix attempts before aborting. Set to 0 for unlimited.

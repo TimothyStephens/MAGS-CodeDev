@@ -1,0 +1,15 @@
+{
+  "name": "mags-codedev-extension",
+  "version": "0.1.0",
+  "description": "Oh My Pi custom tools for MAGs-CodeDev multi-agent CLI",
+  "type": "module",
+  "omp": {
+    "extensions": ["./src/main.ts"]
+  },
+  "dependencies": {
+    "@oh-my-pi/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

@@ -2,13 +2,13 @@ from langgraph.constants import END, START
 from langgraph.graph import StateGraph
 from mags_codedev.state import ModuleState
 
-# Import placeholder agent and utility nodes. 
-# (We will implement these in the agents/ and utils/ directories next)
+# Import placeholder agent and utility nodes.
 from mags_codedev.agents.coder import coder_node
 from mags_codedev.agents.tester import tester_node
 from mags_codedev.utils.docker_ops import test_node, linter_node
 from mags_codedev.agents.log_checker import log_checker_node
 from mags_codedev.agents.reviewer import multi_llm_review_node
+
 
 def build_function_graph():
     """
@@ -16,50 +16,45 @@ def build_function_graph():
     This graph will be executed in parallel for multiple modules.
     """
     workflow = StateGraph(ModuleState)
-    
+
     # ---------------------------------------------------------
     # 1. Define Nodes (Agents and Tools)
     # ---------------------------------------------------------
-    # The Coder generates or fixes the function code
     workflow.add_node("coder", coder_node)
-    
-    # The Tester writes comprehensive unit tests for the code
     workflow.add_node("tester", tester_node)
-    
-    # Tool: Runs tests in the configured execution environment (docker, apptainer, local)
     workflow.add_node("run_tests", test_node)
-    
-    # Tool: Runs MyPy/Flake8/Ruff on the code
     workflow.add_node("run_linters", linter_node)
-    
-    # The Log Checker acts as a diagnostic agent, translating raw tracebacks
     workflow.add_node("log_checker", log_checker_node)
-    
-    # Multi-Agent Review runs concurrently to aggregate peer-review feedback
     workflow.add_node("multi_llm_review", multi_llm_review_node)
-    
+
     # ---------------------------------------------------------
     # 2. Define Standard Edges (Linear Flow)
     # ---------------------------------------------------------
     workflow.set_entry_point("coder")
     workflow.add_edge("coder", "tester")
     workflow.add_edge("tester", "run_tests")
-    
+
     # ---------------------------------------------------------
     # 3. Define Conditional Edges (Decision Logic)
     # ---------------------------------------------------------
-    
+
     # A. Evaluate Docker Test Results
     def evaluate_test_results(state: ModuleState) -> str:
         max_iters = state.get("max_iterations", 5)
         if max_iters > 0 and state["iteration_count"] >= max_iters:
             return "max_iterations_reached"
-            
-        # The test_node will populate state["test_results"]
-        if "FAILED" in state["test_results"].upper() or "ERROR" in state["test_results"].upper():
+
+        # Use the backend to determine test failure keywords.
+        backend = state.get("backend")
+        failure_keywords = (
+            backend.test_success_keywords() if backend
+            else ["FAILED", "ERROR"]  # fallback
+        )
+        test_upper = state["test_results"].upper()
+        if any(kw in test_upper for kw in failure_keywords):
             return "tests_failed"
         return "tests_passed"
-        
+
     workflow.add_conditional_edges(
         "run_tests",
         evaluate_test_results,
@@ -78,12 +73,12 @@ def build_function_graph():
         max_iters = state.get("max_iterations", 5)
         if max_iters > 0 and state["iteration_count"] >= max_iters:
             return "max_iterations_reached"
-            
+
         # If the log checker populates an error_summary, route to the correct fixer
         if state.get("error_summary"):
             if state.get("error_location") == "TEST_CODE":
                 return "fix_tests"
-            return "fix_source" # Default to fixing source
+            return "fix_source"  # Default to fixing source
         return "clean"
 
     workflow.add_conditional_edges(
@@ -102,11 +97,11 @@ def build_function_graph():
         max_iters = state.get("max_iterations", 5)
         if max_iters > 0 and state["iteration_count"] >= max_iters:
             return "max_iterations_reached"
-            
+
         # If reviewers aggregated actionable comments, send back to Coder to revise
         if state.get("review_comments") and len(state["review_comments"]) > 0:
             return "revise"
-        
+
         # If the list is empty, all reviewers approved
         return "approved"
 
@@ -119,6 +114,6 @@ def build_function_graph():
             "max_iterations_reached": END
         }
     )
-    
+
     # Compile the graph into a runnable LangChain executable
     return workflow.compile()

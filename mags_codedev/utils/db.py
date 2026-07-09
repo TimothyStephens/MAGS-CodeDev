@@ -1,7 +1,6 @@
 import sqlite3
 import hashlib
 import json
-import pprint
 import os
 from mags_codedev.utils.logger import logger
 from langchain_core.callbacks import BaseCallbackHandler

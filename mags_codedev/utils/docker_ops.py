@@ -8,12 +8,13 @@ from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import load_config
 from mags_codedev.utils.logger import logger
 
-def _generate_dockerfile_content(config: dict) -> str:
-    """Generates Dockerfile content based on requirements.txt and system dependencies."""
-    base_image = config.get("settings", {}).get("python_base_image", "python:3.11-slim")
+
+def _generate_dockerfile_content(config: dict, backend) -> str:
+    """Generates Dockerfile content based on project dependencies and backend."""
+    base_image = config.get("settings", {}).get("python_base_image",
+                                                backend.default_base_image)
     system_deps = config.get("settings", {}).get("system_dependencies", [])
-    core_deps = "pytest flake8 mypy"
-    
+
     dockerfile_parts = [f"FROM {base_image}"]
 
     if system_deps:
@@ -22,23 +23,27 @@ def _generate_dockerfile_content(config: dict) -> str:
             "RUN apt-get update && apt-get install -y --no-install-recommends "
             f"{deps_str} && rm -rf /var/lib/apt/lists/*"
         )
-    
-    dockerfile_parts.append(f"RUN pip install --no-cache-dir {core_deps}")
-    
-    if Path("requirements.txt").exists():
+
+    # Core test/lint deps from backend
+    dockerfile_parts.append(f"RUN {backend.install_core_deps_command()}")
+
+    # Project deps from backend
+    deps_file = backend.deps_filename
+    if Path(deps_file).exists():
         dockerfile_parts.extend([
-            "COPY requirements.txt /app/requirements.txt",
-            "RUN pip install --no-cache-dir -r /app/requirements.txt"
+            f"COPY {deps_file} /app/{deps_file}",
+            backend.install_project_deps_command(Path(deps_file))
         ])
-        
+
     dockerfile_parts.append("WORKDIR /app")
     return "\n".join(dockerfile_parts)
 
-def _generate_apptainer_def_content(config: dict) -> str:
-    """Generates Apptainer definition file content based on requirements.txt and system dependencies."""
-    base_image = config.get("settings", {}).get("python_base_image", "python:3.11-slim")
+
+def _generate_apptainer_def_content(config: dict, backend) -> str:
+    """Generates Apptainer definition file content based on backend."""
+    base_image = config.get("settings", {}).get("python_base_image",
+                                                backend.default_base_image)
     system_deps = config.get("settings", {}).get("system_dependencies", [])
-    core_deps = "pytest flake8 mypy"
 
     post_section = ["    export DEBIAN_FRONTEND=noninteractive"]
 
@@ -50,12 +55,13 @@ def _generate_apptainer_def_content(config: dict) -> str:
             "    rm -rf /var/lib/apt/lists/*"
         ])
 
-    post_section.append(f"    pip install --no-cache-dir {core_deps}")
-    
+    post_section.append(f"    {backend.install_core_deps_command()}")
+
+    deps_file = backend.deps_filename
     files_section = ""
-    if Path("requirements.txt").exists():
-        files_section = "\n%files\n    requirements.txt /app/requirements.txt\n"
-        post_section.append("    pip install --no-cache-dir -r /app/requirements.txt")
+    if Path(deps_file).exists():
+        files_section = f"\n%files\n    {deps_file} /app/{deps_file}\n"
+        post_section.append(f"    {backend.install_project_deps_command(Path(deps_file))}")
 
     return f"""
 Bootstrap: docker
@@ -65,7 +71,8 @@ From: {base_image}
 {chr(10).join(post_section)}
 """.strip()
 
-def _run_with_docker(state: dict, command: str, config: dict, func_logger: logging.Logger) -> str:
+
+def _run_with_docker(state: dict, command: str, config: dict, func_logger: logging.Logger, backend=None) -> str:
     """Runs a command inside a Docker container, building the image if necessary."""
     try:
         client = docker.from_env()
@@ -77,23 +84,22 @@ def _run_with_docker(state: dict, command: str, config: dict, func_logger: loggi
         return err_msg
 
     image_name = config.get("settings", {}).get("docker_test_image", "mags-dev-env:latest")
-    
+
     # Check if image exists and build if not
     try:
         client.images.get(image_name)
         func_logger.debug(f"Docker image '{image_name}' found locally.")
     except docker.errors.ImageNotFound:
-        func_logger.info(f"Docker image '{image_name}' not found. Attempting to build from requirements.txt...")
-        
-        dockerfile_content = _generate_dockerfile_content(config)
+        func_logger.info(f"Docker image '{image_name}' not found. Attempting to build...")
+
+        dockerfile_content = _generate_dockerfile_content(config, backend)
         temp_dockerfile_path = Path("Dockerfile.mags-codedev")
-        
+
         try:
             with open(temp_dockerfile_path, "w") as f:
                 f.write(dockerfile_content)
-            
+
             func_logger.debug(f"Building Docker image '{image_name}' using temporary Dockerfile...")
-            # The build context is the current directory, where requirements.txt should be.
             _, build_log = client.images.build(
                 path=".",
                 dockerfile=str(temp_dockerfile_path),
@@ -119,10 +125,16 @@ def _run_with_docker(state: dict, command: str, config: dict, func_logger: loggi
         finally:
             if temp_dockerfile_path.exists():
                 temp_dockerfile_path.unlink()
+
     timeout_mins = config.get("settings", {}).get("timeout_per_module_mins", 15)
     timeout_seconds = timeout_mins * 60
     worktree_path = state["worktree_path"]
     container = None
+
+    # Build environment vars from backend (container uses /app mount)
+    env_vars = {}
+    if backend:
+        env_vars = backend.container_env_vars()
 
     func_logger.debug(f"Docker: Running command in {image_name}:\n{command}")
 
@@ -135,15 +147,14 @@ def _run_with_docker(state: dict, command: str, config: dict, func_logger: loggi
             detach=True,
             stderr=True,
             stdout=True,
-            environment={"PYTHONPATH": "/app"}
+            environment=env_vars
         )
-        
+
         container.wait(timeout=timeout_seconds)
         logs = container.logs(stdout=True, stderr=True).decode("utf-8")
         return logs
-        
+
     except docker.errors.NotFound:
-        # This should not be reached if build logic is correct, but kept as a safeguard.
         err_msg = f"Docker image '{image_name}' not found. Build failed or was interrupted."
         logger.error(err_msg)
         func_logger.error(err_msg)
@@ -162,20 +173,21 @@ def _run_with_docker(state: dict, command: str, config: dict, func_logger: loggi
         if container:
             container.remove(force=True)
 
-def _run_with_apptainer(state: dict, command: str, config: dict, func_logger: logging.Logger) -> str:
+
+def _run_with_apptainer(state: dict, command: str, config: dict, func_logger: logging.Logger, backend=None) -> str:
     """Runs a command inside an Apptainer container, building the image if necessary."""
     image_name = config.get("settings", {}).get("apptainer_test_image", "mags-dev-env.sif")
     timeout_mins = config.get("settings", {}).get("timeout_per_module_mins", 15)
     timeout_seconds = timeout_mins * 60
     worktree_path = state["worktree_path"]
-    
+
     image_path = Path(image_name)
     if not image_path.exists():
-        func_logger.info(f"Apptainer image '{image_name}' not found. Attempting to build from requirements.txt...")
-        
-        def_content = _generate_apptainer_def_content(config)
+        func_logger.info(f"Apptainer image '{image_name}' not found. Attempting to build...")
+
+        def_content = _generate_apptainer_def_content(config, backend)
         def_file = f"{image_name}.def"
-        
+
         try:
             with open(def_file, "w") as f:
                 f.write(def_content)
@@ -183,8 +195,7 @@ def _run_with_apptainer(state: dict, command: str, config: dict, func_logger: lo
             build_command = ["apptainer", "build", "--force", image_name, def_file]
             func_logger.debug(f"Running Apptainer build: {' '.join(build_command)}")
 
-            # Use a longer timeout for the build process itself.
-            build_timeout = 30 * 60 # 30 minutes for build
+            build_timeout = 30 * 60  # 30 minutes for build
             process = subprocess.run(
                 build_command,
                 capture_output=True, text=True, timeout=build_timeout, check=True
@@ -210,10 +221,16 @@ def _run_with_apptainer(state: dict, command: str, config: dict, func_logger: lo
             if os.path.exists(def_file):
                 os.remove(def_file)
 
+    # Build env string from backend (container uses /app mount)
+    env_str = "PYTHONPATH=/app"  # fallback
+    if backend:
+        env_vars = backend.container_env_vars()
+        env_str = ":".join(f"{k}={v}" for k, v in env_vars.items())
+
     apptainer_command = [
         "apptainer", "exec",
         "--bind", f"{worktree_path}:/app",
-        "--env", "PYTHONPATH=/app",
+        "--env", env_str,
         "--pwd", "/app",
         str(image_path),
         "sh", "-c", command
@@ -245,7 +262,8 @@ def _run_with_apptainer(state: dict, command: str, config: dict, func_logger: lo
         func_logger.exception("Apptainer execution error")
         return err_msg
 
-def _run_locally(state: dict, command: str, config: dict, func_logger: logging.Logger) -> str:
+
+def _run_locally(state: dict, command: str, config: dict, func_logger: logging.Logger, backend=None) -> str:
     """Runs a command in the local environment."""
     timeout_mins = config.get("settings", {}).get("timeout_per_module_mins", 15)
     timeout_seconds = timeout_mins * 60
@@ -253,9 +271,13 @@ def _run_locally(state: dict, command: str, config: dict, func_logger: logging.L
 
     func_logger.debug(f"Local: Running command in {worktree_path}:\n{command}")
 
-    # Ensure PYTHONPATH includes the worktree for local execution
+    # Build environment from backend
     env = os.environ.copy()
-    env["PYTHONPATH"] = f"{worktree_path}:{env.get('PYTHONPATH', '')}"
+    if backend:
+        for k, v in backend.env_vars(worktree_path).items():
+            env[k] = v
+    else:
+        env["PYTHONPATH"] = f"{worktree_path}:{env.get('PYTHONPATH', '')}"
 
     try:
         result = subprocess.run(
@@ -279,38 +301,49 @@ def _run_locally(state: dict, command: str, config: dict, func_logger: logging.L
         func_logger.exception("Local execution error")
         return err_msg
 
+
 def _run_in_environment(state: ModuleState, command: str) -> str:
     """Helper to run a command in the configured environment (docker, apptainer, or local)."""
     code, tests = state["code"], state["tests"]
     config_path, worktree_path = state["config_path"], state["worktree_path"]
-    
+    backend = state.get("backend")
+
     if state.get("log_filepath"):
         log_hash = os.path.basename(state["log_filepath"]).replace(".log", "")
         func_logger = logging.getLogger(f"mags.func.{log_hash}")
     else:
         func_logger = logger
-    
+
     # Write code/tests to the worktree so they can be mounted/used.
     code_abs_path = os.path.join(worktree_path, state["spec"]["location"])
     test_abs_path = os.path.join(worktree_path, state["test_location"])
-    
+
     os.makedirs(os.path.dirname(code_abs_path), exist_ok=True)
     os.makedirs(os.path.dirname(test_abs_path), exist_ok=True)
-    
-    with open(code_abs_path, "w") as f: f.write(code)
-    with open(test_abs_path, "w") as f: f.write(tests)
 
-    # Create __init__.py files to ensure directories are treated as packages.
-    # This is crucial for correct imports from the test environment's root.
+    with open(code_abs_path, "w") as f:
+        f.write(code)
+    with open(test_abs_path, "w") as f:
+        f.write(tests)
+
+    # Create init files based on backend patterns.
     source_dir = Path(os.path.dirname(code_abs_path))
     worktree_root = Path(worktree_path)
-    
+
     current_dir = source_dir
     while worktree_root in current_dir.parents:
-        init_py = current_dir / "__init__.py"
-        if not init_py.exists():
-            func_logger.debug(f"Creating missing __init__.py at {init_py}")
-            init_py.touch()
+        if backend:
+            for pattern in backend.init_file_patterns():
+                init_file = current_dir / pattern
+                if not init_file.exists():
+                    func_logger.debug(f"Creating missing {pattern} at {init_file}")
+                    init_file.touch()
+        else:
+            # Fallback: __init__.py
+            init_py = current_dir / "__init__.py"
+            if not init_py.exists():
+                func_logger.debug(f"Creating missing __init__.py at {init_py}")
+                init_py.touch()
         current_dir = current_dir.parent
 
     config = load_config(config_path)
@@ -321,22 +354,28 @@ def _run_in_environment(state: ModuleState, command: str) -> str:
     full_command = command
 
     if runner == "docker":
-        return _run_with_docker(state, full_command, config, func_logger)
+        return _run_with_docker(state, full_command, config, func_logger, backend)
     elif runner == "apptainer":
-        return _run_with_apptainer(state, full_command, config, func_logger)
+        return _run_with_apptainer(state, full_command, config, func_logger, backend)
     elif runner == "local":
-        # For local, we still need to install dependencies.
-        install_deps_cmd = "pip install -r requirements.txt && " if os.path.exists(os.path.join(worktree_path, "requirements.txt")) else ""
-        # Also install core deps if running locally
-        install_core_cmd = "pip install pytest flake8 mypy && "
-        return _run_locally(state, f"{install_core_cmd}{install_deps_cmd}{command}", config, func_logger)
+        # For local, install deps before running the command.
+        local_prefix = ""
+        if backend:
+            local_prefix = f"{backend.local_install_command} && {backend.local_project_install_command} && "
+        else:
+            # Fallback for no backend
+            deps_file = "requirements.txt"
+            install_deps_cmd = f"pip install -r {deps_file} && " if os.path.exists(os.path.join(worktree_path, deps_file)) else ""
+            local_prefix = f"pip install pytest pytest-cov flake8 mypy bandit && {install_deps_cmd}"
+        return _run_locally(state, f"{local_prefix}{command}", config, func_logger, backend)
     else:
         err_msg = f"Invalid test_runner '{runner}' in config.yaml. Must be 'docker', 'apptainer', or 'local'."
         logger.error(err_msg)
         func_logger.error(err_msg)
         return err_msg
 
-def run_command_in_project_env(command: str, config_path: Path, project_root: str, func_logger: logging.Logger) -> str:
+
+def run_command_in_project_env(command: str, config_path: Path, project_root: str, func_logger: logging.Logger, backend=None) -> str:
     """Helper to run a command in the configured environment against the whole project."""
     config = load_config(config_path)
     runner = config.get("settings", {}).get("test_runner", "docker").lower()
@@ -344,41 +383,60 @@ def run_command_in_project_env(command: str, config_path: Path, project_root: st
     # Create a mock state-like object for the runner functions
     mock_state = {"worktree_path": project_root}
 
-    # The command to run inside the environment.
-    # Dependencies are baked into the image for container runners.
     full_command = command
 
     if runner == "docker":
-        return _run_with_docker(mock_state, full_command, config, func_logger)
+        return _run_with_docker(mock_state, full_command, config, func_logger, backend)
     elif runner == "apptainer":
-        return _run_with_apptainer(mock_state, full_command, config, func_logger)
+        return _run_with_apptainer(mock_state, full_command, config, func_logger, backend)
     elif runner == "local":
-        # For local, we still need to install dependencies.
-        install_deps_cmd = "pip install -r requirements.txt && " if os.path.exists(os.path.join(project_root, "requirements.txt")) else ""
-        # Also install core deps if running locally
-        install_core_cmd = "pip install pytest flake8 mypy && "
-        return _run_locally(mock_state, f"{install_core_cmd}{install_deps_cmd}{command}", config, func_logger)
+        local_prefix = ""
+        if backend:
+            local_prefix = f"{backend.local_install_command} && {backend.local_project_install_command} && "
+        else:
+            deps_file = "requirements.txt"
+            install_deps_cmd = f"pip install -r {deps_file} && " if os.path.exists(os.path.join(project_root, deps_file)) else ""
+            local_prefix = f"pip install pytest pytest-cov flake8 mypy bandit && {install_deps_cmd}"
+        return _run_locally(mock_state, f"{local_prefix}{command}", config, func_logger, backend)
     else:
         err_msg = f"Invalid test_runner '{runner}' in config.yaml. Must be 'docker', 'apptainer', or 'local'."
         logger.error(err_msg)
         func_logger.error(err_msg)
         return err_msg
 
+
 def test_node(state: ModuleState) -> dict:
-    """LangGraph node: Executes pytest in the configured environment."""
-    # Use Path(...).as_posix() to ensure forward slashes for Linux container commands
+    """LangGraph node: Executes tests in the configured environment."""
+    backend = state.get("backend")
     test_file = Path(state["test_location"]).as_posix()
-    logs = _run_in_environment(state, f"pytest {test_file} -v")
+    source_module = Path(state["spec"]["location"]).with_suffix("").as_posix().replace("/", ".")
+
+    if backend:
+        cmd = backend.test_command(Path(test_file), source_module)
+    else:
+        # Fallback: hardcoded pytest
+        cmd = f"pytest {test_file} -v --cov={source_module} --cov-report=term-missing"
+
+    logs = _run_in_environment(state, cmd)
     return {"test_results": logs}
 
-def linter_node(state: ModuleState) -> dict:
-    """LangGraph node: Executes flake8 and mypy in the configured environment."""
-    target_file = Path(state["spec"]["location"]).as_posix()
-    # The command is structured to run mypy even if flake8 fails.
-    logs = _run_in_environment(state, f"flake8 {target_file}; mypy {target_file}")
 
-    # If the output is empty (flake8 success) or just the mypy success message,
-    # return an empty string to prevent the log_checker from running on clean code.
-    if not logs.strip() or logs.strip().startswith("Success: no issues found"):
+def linter_node(state: ModuleState) -> dict:
+    """LangGraph node: Executes linters in the configured environment."""
+    backend = state.get("backend")
+    target_file = Path(state["spec"]["location"]).as_posix()
+
+    if backend:
+        cmd = backend.lint_command(Path(target_file))
+        success_prefixes = backend.lint_success_prefixes()
+    else:
+        # Fallback: hardcoded linters
+        cmd = f"flake8 {target_file}; mypy {target_file}; bandit -r {target_file} --skip B101,B104"
+        success_prefixes = ["Success: no issues found"]
+
+    logs = _run_in_environment(state, cmd)
+
+    # If the output is empty or matches success prefix, return empty to skip log_checker.
+    if not logs.strip() or any(logs.strip().startswith(p) for p in success_prefixes):
         return {"lint_results": ""}
     return {"lint_results": logs}

@@ -2,6 +2,7 @@ import os
 import yaml
 import json
 from pathlib import Path
+from typing import Optional
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -15,6 +16,7 @@ except ImportError:
     ChatCohere = None
 
 from mags_codedev.utils.db import TokenLoggingCallbackHandler
+from mags_codedev.utils.logger import logger
 
 def ensure_config_structure(config: dict) -> dict:
     """Ensures the config dictionary has the modern structure, migrating if necessary."""
@@ -55,11 +57,14 @@ def ensure_config_structure(config: dict) -> dict:
 def load_config(config_path: Path = Path("config.yaml")) -> dict:
     """Loads configuration from yaml and overrides with VS Code settings if present."""
     config = {}
-    
+
     # Load base config
     if config_path.exists():
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f) or {}
+        try:
+            with open(config_path, "r") as f:
+                config = yaml.safe_load(f) or {}
+        except Exception as e:
+            logger.error(f"Failed to load config from {config_path}: {e}")
             
     # Ensure structure is up to date
     config = ensure_config_structure(config)
@@ -84,7 +89,7 @@ def load_config(config_path: Path = Path("config.yaml")) -> dict:
             
     return config
 
-def _create_llm_instance(model_config: dict, api_keys: dict, role: str = None):
+def _create_llm_instance(model_config: dict, api_keys: dict, role: Optional[str] = None):
     provider = model_config.get("provider", "openai").lower()
     model_name = model_config.get("model", "gpt-4o")
     

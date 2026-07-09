@@ -25,6 +25,7 @@ from mags_codedev.utils.db import init_db, is_function_built, mark_function_buil
 from mags_codedev.utils.git_ops import create_parallel_worktree, merge_and_cleanup_worktree, validate_git_repo
 from mags_codedev.utils.config_parser import load_config, get_llm, get_reviewer_llms
 from mags_codedev.utils.logger import logger
+from mags_codedev.backends import get_backend
 
 app = typer.Typer(
     help="MAGs-CodeDev: Multi-Agent Graph System for Code Development",
@@ -352,9 +353,10 @@ async def process_module(module_location: str, spec: dict, status_dict: dict, se
                 worktree_path = await asyncio.to_thread(create_parallel_worktree, branch_name, force_fresh=force_fresh)
             status_dict[module_location]["worktree"] = worktree_path
             
-            # Copy requirements.txt to worktree if it exists in root but not in worktree
+            # Copy deps file to worktree if it exists in root but not in worktree
             # This ensures dependencies are available for Docker tests even if not committed to main
-            req_file = "requirements.txt"
+            backend = get_backend(config_path)
+            req_file = backend.deps_filename
             if os.path.exists(req_file):
                 dest_req = os.path.join(worktree_path, req_file)
                 if not os.path.exists(dest_req):
@@ -395,8 +397,9 @@ async def process_module(module_location: str, spec: dict, status_dict: dict, se
             config = load_config(config_path)
             max_iterations = config.get("settings", {}).get("max_iterations", 5)
 
-            # 2. Initialize LangGraph State
+            # 2. Initialize LangGraph State (inject backend for language-specific tooling)
             initial_state: ModuleState = {
+                "backend": backend,
                 "spec": spec,
                 "module_location": module_location,
                 "log_filepath": log_filepath,
@@ -410,7 +413,7 @@ async def process_module(module_location: str, spec: dict, status_dict: dict, se
                 "review_comments": [],
                 "error_summary": initial_error or "",
                 "iteration_count": 1 if initial_error else 0,
-                "max_iterations": max_iterations, # Prevent infinite loops
+                "max_iterations": max_iterations,  # Prevent infinite loops
                 "status": "in_progress"
             }
             
@@ -560,11 +563,13 @@ def init(
     console.print("[green]Initialized SQLite Database[/green]")
     logger.info("Initialized SQLite database.")
     
-    # 4. requirements.txt
-    if not os.path.exists("requirements.txt"):
-        Path("requirements.txt").touch()
-        console.print("[green]Created empty requirements.txt for project dependencies.[/green]")
-        logger.info("Created empty requirements.txt.")
+    # 4. Dependencies file (backend-agnostic)
+    init_backend = get_backend(config_path)
+    deps_file = init_backend.deps_filename
+    if not os.path.exists(deps_file):
+        Path(deps_file).touch()
+        console.print(f"[green]Created empty {deps_file} for project dependencies.[/green]")
+        logger.info(f"Created empty {deps_file}.")
 
     # 5. Interactive Setup (Manifest & AGENT.md)
     manifest_created = False
@@ -614,15 +619,15 @@ def init(
 2.  **Plan:** Propose a plan that includes:
     *   A file and directory structure.
     *   A list of core modules for the manifest, including dependencies between them.
-    *   Any necessary Python dependencies for `requirements.txt`.
+    *   Any necessary dependencies for the project dependency file.
     *   A brief project description for `README.md`.
     *   Any necessary entries for `.gitignore`.
 3.  **Execute:** Once the user approves your plan, use your tools to create or modify the project files. You have the `read_file` and `write_file` tools. If a file already exists, read it first to decide if you should append or overwrite.
 
 **Key Files to Create/Modify:**
-*   `{manifest_path}`: A JSON file defining the modules to be built. This is your primary output for the build system. Each element in the JSON array represents one Python module file to be created.
+*   `{manifest_path}`: A JSON file defining the modules to be built. This is your primary output for the build system. Each element in the JSON array represents one module file to be created.
 *   `AGENT.md`: A markdown file with high-level instructions for the other AI agents (e.g., language, coding standards).
-*   `requirements.txt`: Add the Python dependencies needed for the project.
+*   `{deps_file}`: Add the dependencies needed for the project.
 *   `README.md`: Create a basic README file for the project.
 *   `.gitignore`: Add any necessary entries.
 
@@ -635,7 +640,7 @@ def init(
             }},
             {{
                 "location": "src/pricing.py",
-                "description": "Core pricing logic. Contains functions to calculate discounts and apply them to products. Depends on src/utils.py for input validation.",
+                "description": "Core pricing logic. Depends on src/utils.py for input validation.",
                 "dependencies": ["src/utils.py"]
             }}
         ]
@@ -643,7 +648,7 @@ def init(
 **Important Rules:**
 *   **Do not write any files until the user has approved your plan.**
 *   **Use the `write_file` tool to create/modify files directly.** Do not output file content in the chat.
-*   **Create all project configuration files in the root directory.** Files like `{manifest_path}`, `AGENT.md`, `README.md`, `requirements.txt`, and `Dockerfile.dev` must be created in the current directory, not in a subdirectory. Source code itself can be in subdirectories (e.g., `src/my_code.py`).
+*   **Create all project configuration files in the root directory.** Files like `{manifest_path}`, `AGENT.md`, `README.md`, `{deps_file}`, and `Dockerfile.dev` must be created in the current directory, not in a subdirectory. Source code itself can be in subdirectories.
 *   Start by greeting the user and asking about their project idea."""
 
             console.print(Panel("[bold green]AI Architect Mode[/bold green]\nDescribe your project idea. The AI will ask questions and then use its tools to write `AGENT.md` and `manifest.json` for you.\n\nType 'exit' or 'quit' to end the session."))
@@ -651,22 +656,22 @@ def init(
             agent_graph = start_chat_repl(config_path=config_path, system_message_override=architect_system_prompt, command_name="init")
             llm = get_llm("chat", config_path) # The architect uses the 'chat' model
             model_name = getattr(llm, 'model_name', getattr(llm, 'model', 'unknown'))
-            config = {
+            graph_config = {
                 "configurable": {"thread_id": "architect-session"},
                 "callbacks": [TokenLoggingCallbackHandler(role="command_init", model_name=model_name)]
             }
-            
+
             while True:
                 try:
                     user_input = console.input("[bold green]You>[/bold green] ")
                     if user_input.lower() in ['exit', 'quit']:
                         logger.info("User exited AI Architect mode.")
                         break
-                    
+
                     logger.debug(f"Architect Input: {user_input}")
-                    
+
                     with console.status("[bold green]Thinking...[/bold green]", spinner="dots"):
-                        response = agent_graph.invoke({"messages": [("user", user_input)]}, config=config)
+                        response = agent_graph.invoke({"messages": [("user", user_input)]}, config=graph_config)
                     last_message = response["messages"][-1]
                     final_answer = extract_content(last_message.content)
                     logger.debug(f"Architect Final Answer: {final_answer}")
@@ -688,11 +693,11 @@ def init(
     # 6. Fallback / Manual Creation
     if not agent_md_created and not os.path.exists("AGENT.md"):
         project_name = os.path.basename(os.getcwd())
+        lang_name = init_backend.display_name
         with open("AGENT.md", "w") as f:
             f.write(f"# Agent Instructions for {project_name}\n\n")
-            f.write("Language: Python\n")
+            f.write(f"Language: {lang_name}\n")
             f.write("Follow standard coding conventions and best practices.\n")
-            f.write("Use PEP 8 standards. Include type hints.\n")
         console.print("[green]Created default AGENT.md[/green]")
         logger.info("Created default AGENT.md.")
 
@@ -709,6 +714,8 @@ def init(
                 "dependencies": ["src/utils.py"]
             }
         ]
+        # Note: these are Python-specific examples, kept for backward compat.
+        # A real language-agnostic manifest would be populated by the user.
         with open(manifest_path, "w") as f:
             json.dump(dummy_manifest, f, indent=4)
         console.print(f"[green]Created dummy {manifest_path}. Please edit this to define your modules.[/green]")
@@ -898,15 +905,16 @@ def test(
     console.print(Panel("[bold cyan]Running Project Unit Tests...[/bold cyan]"))
     logger.info("Starting project-wide test run.")
 
-    # The command to run pytest. Pytest will discover tests automatically.
-    command = "pytest -v"
-    
+    # Load backend to get the project-wide test command
+    test_backend = get_backend(config_path)
+    command = test_backend.test_command_project()
+
     # The project root is the current working directory
     project_root = os.getcwd()
 
     # Use a spinner while tests are running
     with console.status("[bold green]Running tests...[/bold green]", spinner="dots"):
-        results = run_command_in_project_env(command, config_path, project_root, logger)
+        results = run_command_in_project_env(command, config_path, project_root, logger, test_backend)
     
     console.print(Panel(results, title="Test Results", border_style="blue"))
     
@@ -920,7 +928,7 @@ def test(
 @app.command()
 def debug(
     error_msg: str = typer.Argument(..., help="The error trace to fix, or a path to the error trace logfile."),
-    module_location: Optional[str] = typer.Option(None, "--module", "-m", help="The module location in manifest.json to apply the fix to. (Optional if providing a log file)"),
+    module_location: Optional[str] = typer.Option(None, "--module", "--mod", help="The module location in manifest.json to apply the fix to. (Optional if providing a log file)"),
     manifest_path: Path = typer.Option(
         "manifest.json", "--manifest", "-m", help="Path to the manifest JSON file."
     ),
@@ -1298,8 +1306,8 @@ def clean(
 
     # Find artifacts to delete
     mags_dir = Path(".MAGS-CodeDev")
-    db_file = mags_dir / "mags_cache.db"
-    log_file = mags_dir / "mags-codedev_workflow.log"
+    db_file = mags_dir / "cache.db"
+    log_file = mags_dir / "workflow.log"
     worktree_dirs = [d for d in os.listdir('.') if d.startswith(".worktree_") and os.path.isdir(d)]
     hash_logs = [f for f in mags_dir.glob("*.log") if len(f.name) == 68] if mags_dir.exists() else [] # 64 chars hash + .log
 

@@ -4,7 +4,7 @@
         {
             "label": "MAGs: 🚀 Init Workspace",
             "type": "shell",
-            "command": "mags init",
+            "command": "mags-codedev init",
             "problemMatcher": [],
             "presentation": {
                 "echo": true,
@@ -17,7 +17,7 @@
         {
             "label": "MAGs: 🏗️ Build Manifest",
             "type": "shell",
-            "command": "mags build",
+            "command": "mags-codedev build",
             "problemMatcher": [],
             "group": {
                 "kind": "build",
@@ -34,7 +34,7 @@
         {
             "label": "MAGs: 🐛 Debug Error",
             "type": "shell",
-            "command": "mags debug \"${input:errorMessage}\"",
+            "command": "mags-codedev debug \"${input:errorMessage}\"",
             "problemMatcher": [],
             "presentation": {
                 "echo": true,
@@ -46,7 +46,7 @@
         {
             "label": "MAGs: 💬 Chat with Codebase",
             "type": "shell",
-            "command": "mags chat",
+            "command": "mags-codedev chat",
             "problemMatcher": [],
             "presentation": {
                 "echo": true,
@@ -59,7 +59,7 @@
         {
             "label": "MAGs: 🪙 View Token Usage",
             "type": "shell",
-            "command": "mags tokens",
+            "command": "mags-codedev tokens",
             "problemMatcher": [],
             "presentation": {
                 "echo": true,

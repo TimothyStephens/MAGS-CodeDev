@@ -212,3 +212,5 @@ __marimo__/
 mags_tokens.db
 mags_cache.db
 config.yaml
+# Local Pi runtime state
+.atl/

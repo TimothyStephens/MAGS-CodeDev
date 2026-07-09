@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Builds the MAGS-CodeDev OMP sandbox image.
+# Always tagged 'latest' — overwrites on each build.
+# Also tagged with version YYYYMMDD.N for safety rollback.
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+IMAGE="localhost/mags-codedev-omp"
+DATE=$(date +%Y%m%d)
+VERSION="${DATE}.${1:-1}"
+
+echo "Building ${IMAGE}:latest (${VERSION}) ..."
+
+podman build \
+    --build-arg BUILD_VERSION="${VERSION}" \
+    -t "${IMAGE}:latest" \
+    -t "${IMAGE}:${VERSION}" \
+    -f Containerfile \
+    .
+
+echo ""
+echo "Done: ${IMAGE}:latest  (rollback: ${IMAGE}:${VERSION})"
