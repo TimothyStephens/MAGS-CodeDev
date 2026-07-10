@@ -2,7 +2,7 @@
 The main application logic module.
 """
 
-# Stub implementation (offline mode)
+# Stub implementation - generated when LLM API unavailable
 # Module: src/main_logic.py
 
 
