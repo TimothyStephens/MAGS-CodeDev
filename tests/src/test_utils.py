@@ -1,13 +1,11 @@
-"""Tests for src.utils."""
-
-# Stub tests - generated when LLM API unavailable
-# Module: src/utils.py
+import pytest
 
 
-def test_src_utils_main():
-    """Test src_utils_main."""
-    # TODO: Implement test for src_utils_main
-    pass
+class TestUtils:
+    """Test utils."""
 
-
+    def test_utils_main(self):
+        """Test utils_main."""
+        # TODO: Implement test for utils_main
+        pass
 
