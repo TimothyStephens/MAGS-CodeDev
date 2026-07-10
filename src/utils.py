@@ -2,7 +2,7 @@
 A module for shared utility functions, like data validation or formatting.
 """
 
-# Stub implementation - generated when LLM API unavailable
+# Stub implementation (offline mode)
 # Module: src/utils.py
 
 
