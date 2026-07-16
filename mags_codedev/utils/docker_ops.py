@@ -294,6 +294,55 @@ def run_command_in_project_env(command: str, config_path: Path, project_root: st
     return _run_in_environment(state, command)
 
 
+def _write_worktree_files(state: ModuleState, func_logger: logging.Logger) -> None:
+    """Write code and tests to the worktree, creating __init__.py files as needed.
+
+    Must be called before running test/lint commands so the container or local
+    runner sees the latest generated files.
+    """
+    backend = state.get("backend")
+    worktree_path = state["worktree_path"]
+
+    code = state.get("code", "")
+    tests = state.get("tests", "")
+    spec_location = state.get("module_location", "")
+    test_location = state.get("test_location", "")
+
+    # Write source code
+    if code and spec_location:
+        code_abs_path = os.path.join(worktree_path, spec_location)
+        os.makedirs(os.path.dirname(code_abs_path), exist_ok=True)
+        with open(code_abs_path, "w") as f:
+            f.write(code)
+
+    # Write tests
+    if tests and test_location:
+        test_abs_path = os.path.join(worktree_path, test_location)
+        os.makedirs(os.path.dirname(test_abs_path), exist_ok=True)
+        with open(test_abs_path, "w") as f:
+            f.write(tests)
+
+    # Create __init__.py files up the directory tree
+    if spec_location:
+        source_dir = Path(os.path.join(worktree_path, spec_location)).parent
+        worktree_root = Path(worktree_path)
+
+        current_dir = source_dir
+        while worktree_root in current_dir.parents or current_dir == worktree_root:
+            if backend:
+                for pattern in backend.init_file_patterns():
+                    init_file = current_dir / pattern
+                    if not init_file.exists():
+                        func_logger.debug(f"Creating missing {pattern} at {init_file}")
+                        init_file.touch()
+            else:
+                init_py = current_dir / "__init__.py"
+                if not init_py.exists():
+                    func_logger.debug(f"Creating missing __init__.py at {init_py}")
+                    init_py.touch()
+            current_dir = current_dir.parent
+
+
 def test_node(state: ModuleState) -> dict:
     """LangGraph node: Executes tests in the configured environment."""
     backend = state.get("backend")
@@ -303,6 +352,14 @@ def test_node(state: ModuleState) -> dict:
         command = backend.get_test_command(test_file)
     else:
         command = f"python -m pytest {test_file} -v --tb=short"
+
+    # Write code/tests to worktree before running
+    if state.get("log_filepath"):
+        log_hash = os.path.basename(state["log_filepath"]).replace(".log", "")
+        func_logger = logging.getLogger(f"mags.func.{log_hash}")
+    else:
+        func_logger = logger
+    _write_worktree_files(state, func_logger)
 
     logs = _run_in_environment(state, command)
     return {"test_results": logs}
@@ -317,6 +374,14 @@ def linter_node(state: ModuleState) -> dict:
         command = backend.get_lint_command(source_file)
     else:
         command = f"python -m flake8 {source_file} --max-line-length=120; python -m mypy {source_file} --ignore-missing-imports"
+
+    # Write code/tests to worktree before running
+    if state.get("log_filepath"):
+        log_hash = os.path.basename(state["log_filepath"]).replace(".log", "")
+        func_logger = logging.getLogger(f"mags.func.{log_hash}")
+    else:
+        func_logger = logger
+    _write_worktree_files(state, func_logger)
 
     logs = _run_in_environment(state, command)
     return {"lint_results": logs}

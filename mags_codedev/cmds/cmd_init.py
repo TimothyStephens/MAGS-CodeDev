@@ -1,6 +1,7 @@
 """Init command for MAGs-CodeDev: workspace initialization and project setup."""
 
 import os
+import datetime
 import json
 import yaml
 import typer
@@ -10,7 +11,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 
-from mags_codedev.utils.logger import setup_logger, logger
+from mags_codedev.utils.logger import setup_logger, logger, get_session_logger
 from mags_codedev.utils.config_parser import load_config, get_llm, get_log_level
 from mags_codedev.utils.db import init_db, TokenLoggingCallbackHandler
 from mags_codedev.utils.git_ops import ensure_git_repo
@@ -83,6 +84,12 @@ def init(
         _open_in_editor(config_path)
 
     setup_logger(base_dir=base_dir, log_level=get_log_level(config_path))
+
+    # Per-session log for debugging init
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    init_logger = get_session_logger(
+        f"init-{ts}", base_dir=base_dir, log_level=get_log_level(config_path)
+    )
 
     logger.info(f"Using configuration: {config_path}")
     logger.info(f"Target manifest: {manifest_path}")

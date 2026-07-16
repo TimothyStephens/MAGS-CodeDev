@@ -4,6 +4,7 @@ import os
 import re
 import json
 import asyncio
+import datetime
 import typer
 from typing import Optional
 from pathlib import Path
@@ -13,7 +14,7 @@ from rich.panel import Panel
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from mags_codedev.utils.logger import setup_logger, logger
+from mags_codedev.utils.logger import setup_logger, logger, get_session_logger
 from mags_codedev.utils.db import (
     hash_spec,
     TokenLoggingCallbackHandler,
@@ -69,6 +70,13 @@ def debug(
     verbose_levels = {0: "info", 1: "debug", 2: "trace"}
     log_level = verbose_levels.get(verbose, "info")
     setup_logger(base_dir=base_dir, log_level=log_level)
+
+    # Per-session log for debugging debug invocations
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    debug_logger = get_session_logger(
+        f"debug-{ts}", base_dir=base_dir, log_level=log_level
+    )
+    debug_logger.info("Debug command started")
 
     # Default manifest to <base_dir>/manifest.json if not specified
     if manifest_path is None:

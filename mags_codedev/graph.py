@@ -24,33 +24,64 @@ def evaluate_test_results(state: ModuleState) -> str:
         backend.test_success_keywords() if backend
         else ["FAILED", "ERROR"]
     )
-    test_upper = state.get("test_results", "").upper()
+    test_results = state.get("test_results", "")
+    test_upper = test_results.upper()
+
+    # Check for failure keywords first
     if any(kw in test_upper for kw in failure_keywords):
         return "tests_failed"
+
+    # Check for "no tests collected" (pytest exit code 5)
+    no_tests_indicators = [
+        "collected 0 items",
+        "no tests ran",
+        "no tests collected",
+        "deselected",
+    ]
+    if any(ind in test_results.lower() for ind in no_tests_indicators):
+        return "tests_failed"
+
+    # Empty results = something went wrong
+    if not test_results.strip():
+        return "tests_failed"
+
     return "tests_passed"
 
 
 def evaluate_logs(state: ModuleState) -> str:
     """Check if log checker found issues, and route accordingly.
 
-    FIX Bug #3: Uses test_error_summary (scoped), returns 'clean' when
-    no actionable errors found (clearing stale feedback).
+    Uses test_error_summary (scoped) which combines test and lint analysis.
+    Trusts error_location from log_checker for routing decisions.
+    Returns 'clean' when no actionable errors found.
     """
     max_iters = state.get("max_test_fix_iterations", 5)
     if max_iters > 0 and state["iteration_count"] >= max_iters:
         return "max_iterations_reached"
 
-    # Use test_error_summary instead of error_summary (scoped tracking)
+    # Use test_error_summary (scoped tracking — includes test + lint analysis)
     error_summary = state.get("test_error_summary", "")
+
+    # If log_checker explicitly said no issues, we're clean
+    if error_summary and "no clear issues" in error_summary.lower():
+        return "clean"
+
+    # If there's a test error summary, route based on error_location
     if error_summary:
-        if "no clear issues" in error_summary.lower():
-            return "clean"
+        error_location = state.get("error_location")
+        # If location is explicitly set, trust it
+        if error_location == "TEST_CODE":
+            return "fix_tests"
+        if error_location == "SOURCE_CODE":
+            return "fix_source"
+        # Linter-only issue (no explicit location) → cosmetic, let review handle it
         if "linter" in error_summary.lower() and "test" not in error_summary.lower():
             return "clean"
-        if state.get("error_location") == "TEST_CODE":
-            return "fix_tests"
+        # Other actionable issues without explicit location → default to source
         return "fix_source"
+
     return "clean"
+
 
 
 def evaluate_reviews(state: ModuleState) -> str:

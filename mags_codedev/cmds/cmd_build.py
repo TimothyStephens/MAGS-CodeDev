@@ -28,7 +28,7 @@ from mags_codedev.utils.cli_common import (
     find_default_config_path,
     _CONFIG_HELP_TEXT,
 )
-from mags_codedev.utils.logger import setup_logger, logger
+from mags_codedev.utils.logger import setup_logger, logger, get_function_logger
 from mags_codedev.backends import get_backend
 from mags_codedev.utils.cli_common import (
     resolve_base_dir,
@@ -60,19 +60,11 @@ async def process_module(
     try:
         func_hash = hash_spec(spec)
         base_dir = resolve_base_dir(config_path)
-        log_dir = os.path.join(base_dir, "logs")
-        os.makedirs(log_dir, exist_ok=True)
-        log_filename = os.path.join(base_dir, f"{func_hash}.log")
-        log_filepath = os.path.abspath(log_filename)
+        log_filepath = os.path.abspath(
+            os.path.join(base_dir, "logs", f"{func_hash}.log")
+        )
 
-        func_logger = logging.getLogger(f"mags.func.{func_hash}")
-        func_logger.setLevel(logging.DEBUG)
-        if not func_logger.handlers:
-            file_handler = logging.FileHandler(log_filepath, mode='w')
-            file_handler.setFormatter(
-                logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-            )
-            func_logger.addHandler(file_handler)
+        func_logger = get_function_logger(func_hash, base_dir=base_dir)
 
         async with semaphore:
             status_dict[module_location] = {
@@ -184,7 +176,6 @@ async def process_module(
                 "test_results": "",
                 "lint_results": "",
                 "test_error_summary": initial_error or "",
-                "lint_error_summary": "",
                 "review_comments": [],
                 "error_location": None,
 
@@ -332,10 +323,7 @@ async def process_module(
                     branch_name, worktree_path, False, base_dir=resolve_base_dir(config_path)
                 )
     finally:
-        if func_logger:
-            for handler in list(func_logger.handlers):
-                handler.close()
-                func_logger.removeHandler(handler)
+        pass  # get_function_logger manages handler lifecycle
 
 
 def build(

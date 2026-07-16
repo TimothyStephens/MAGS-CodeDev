@@ -129,6 +129,6 @@ class PythonBackend:
             "Module Specification:\n{spec}\n\n"
             "Generated Code to Test:\n{code}\n\n"
             "PREVIOUS (BROKEN) TESTS:\n{previous_tests}\n\n"
-            "DIAGNOSIS OF FAILURE:\n{error_summary}\n\n"
+            "DIAGNOSIS OF FAILURE:\n{test_error_summary}\n\n"
             "Your task is to provide a new, corrected version of the pytest unit tests."
         )

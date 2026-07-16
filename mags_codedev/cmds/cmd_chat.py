@@ -1,12 +1,13 @@
 """Chat command: freely chat with the LLM about the codebase."""
 
+import datetime
 import typer
 from typing import Optional
 from pathlib import Path
 
 from rich.console import Console
 
-from mags_codedev.utils.logger import setup_logger, logger
+from mags_codedev.utils.logger import setup_logger, logger, get_session_logger
 from mags_codedev.utils.config_parser import get_llm
 from mags_codedev.utils.db import TokenLoggingCallbackHandler
 from mags_codedev.utils.cli_helpers import extract_content, format_llm_error
@@ -43,6 +44,12 @@ def chat(
     verbose_levels = {0: "info", 1: "debug", 2: "trace"}
     log_level = verbose_levels.get(verbose, "info")
     setup_logger(base_dir=base_dir, log_level=log_level)
+
+    # Per-session log for debugging chat interactions
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    chat_logger = get_session_logger(
+        f"chat-{ts}", base_dir=base_dir, log_level=log_level
+    )
 
     logger.info(f"Using configuration: {config_path}")
     from mags_codedev.agents.chat_agent import start_chat_repl

@@ -29,7 +29,6 @@ class ModuleState(TypedDict, total=False):
 
     # Agent Feedback (scoped — cleared after log_checker processes)
     test_error_summary: str       # Error summary from test phase only
-    lint_error_summary: str       # Error summary from lint phase only
     review_comments: List[str]    # Aggregated feedback from multi-LLM review
     error_location: Optional[str] # Set by log_checker: 'SOURCE_CODE' or 'TEST_CODE'
 

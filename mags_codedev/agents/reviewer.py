@@ -16,10 +16,13 @@ async def _get_review(llm, state: ModuleState) -> str:
         func_logger = logging.getLogger(f"mags.func.{log_hash}")
     else:
         func_logger = logger
-    system_prompt = """You are a strict Code Reviewer.
-    Analyze this code for security flaws, performance bottlenecks, and best practices.
-    If the code is perfect, reply EXACTLY with 'LGTM'.
-    If there are issues, list them clearly."""
+    system_prompt = (
+        "You are a strict Code Reviewer.\n"
+        "Review this code for: correctness, edge case handling, naming conventions,\n"
+        "code complexity, security flaws, performance bottlenecks, and best practices.\n"
+        "If the code is perfect, reply EXACTLY with 'LGTM'.\n"
+        "If there are issues, list them clearly with specific line references."
+    )
     # Build project instructions block
     project_instructions = state.get("project_instructions", "")
     project_instructions_block = ""
@@ -30,7 +33,21 @@ async def _get_review(llm, state: ModuleState) -> str:
             + project_instructions + "\n\n"
         )
 
-    human_template = project_instructions_block + "Spec: {spec}\nCode:\n{code}"
+    # Build dependency context block
+    dep_code = state.get("dependency_code", {})
+    dependency_context = ""
+    if dep_code:
+        dep_parts = []
+        for loc, source in dep_code.items():
+            dep_parts.append(f"--- File: {loc} ---\n```python\n{source}\n```")
+        dependency_context = (
+            "DEPENDENCY CONTEXT\n"
+            "These are the source files this module depends on.\n"
+            "Verify the code correctly imports from and uses these dependencies.\n\n"
+            + "\n\n".join(dep_parts) + "\n\n"
+        )
+
+    human_template = project_instructions_block + dependency_context + "Spec: {spec}\nCode:\n{code}"
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),

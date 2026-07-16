@@ -49,7 +49,8 @@ def log_checker_node(state: ModuleState) -> dict:
     llm = get_llm(role="log_checker", config_path=config_path)
 
     system_prompt = """You are a Senior Diagnostic Engineer. Your output MUST be a valid JSON object.
-        Read the code, test traceback, and linter warnings.
+        Read the code, dependency context, test traceback, and linter warnings.
+        Consider project conventions and dependency interfaces when diagnosing issues.
 
         Output a JSON object with two keys:
         1. "location": A string, either "SOURCE_CODE" or "TEST_CODE".
@@ -70,8 +71,22 @@ def log_checker_node(state: ModuleState) -> dict:
             + project_instructions + "\n\n"
         )
 
+    # Build dependency context block
+    dep_code = state.get("dependency_code", {})
+    dependency_context = ""
+    if dep_code:
+        dep_parts = []
+        for loc, source in dep_code.items():
+            dep_parts.append(f"--- File: {loc} ---\n```python\n{source}\n```")
+        dependency_context = (
+            "DEPENDENCY CONTEXT\n"
+            "These are the source files this module depends on.\n\n"
+            + "\n\n".join(dep_parts) + "\n\n"
+        )
+
     human_template = (
         project_instructions_block
+        + dependency_context
         + "\nCode:\n{code}\n\n"
         + "Test Traceback:\n{test_results}\n\n"
         + "Linter Warnings:\n{lint_results}\n"
