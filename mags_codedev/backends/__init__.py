@@ -8,24 +8,14 @@ Each language has its own backend that provides:
 """
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from mags_codedev.backends.language_backend import LanguageBackend
 from mags_codedev.backends.python import PythonBackend
-
-if TYPE_CHECKING:
-    pass
 
 # Registry: language identifier → backend instance
 BACKEND_REGISTRY: dict[str, LanguageBackend] = {
     "python": PythonBackend(),
 }
-
-# Human-readable name map
-LANGUAGE_DISPLAY: dict[str, str] = {
-    "python": "Python",
-}
-
 
 def get_backend(config_path: Path) -> LanguageBackend:
     """Load the language backend from config or default to Python.

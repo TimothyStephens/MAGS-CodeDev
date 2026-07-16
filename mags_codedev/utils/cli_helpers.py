@@ -34,20 +34,20 @@ def _open_in_editor(path: str) -> Optional[str]:
         # Probe for common editors
         for candidate in ["vim", "nano", "code"]:
             try:
-                if subprocess.run(
+                subprocess.run(
                     ["which", candidate],
                     capture_output=True,
                     check=True,
-                ):
-                    editor = candidate
-                    break
+                )
+                editor = candidate
+                break
             except subprocess.CalledProcessError:
                 continue
 
     if not editor:
         return None
 
-    if editor == "code" and "--wait" not in path:
+    if editor == "code" and "--wait" not in editor:
         # VS Code needs --wait to block
         subprocess.run(["code", "--wait", path])
     else:

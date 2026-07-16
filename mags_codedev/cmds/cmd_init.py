@@ -1,7 +1,6 @@
 """Init command for MAGs-CodeDev: workspace initialization and project setup."""
 
 import os
-import datetime
 import json
 import yaml
 import typer
@@ -11,7 +10,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 
-from mags_codedev.utils.logger import setup_logger, logger, get_session_logger
+from mags_codedev.utils.logger import setup_logger, logger
 from mags_codedev.utils.config_parser import load_config, get_llm, get_log_level
 from mags_codedev.utils.db import init_db, TokenLoggingCallbackHandler
 from mags_codedev.utils.git_ops import ensure_git_repo
@@ -85,18 +84,13 @@ def init(
 
     setup_logger(base_dir=base_dir, log_level=get_log_level(config_path))
 
-    # Per-session log for debugging init
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    init_logger = get_session_logger(
-        f"init-{ts}", base_dir=base_dir, log_level=get_log_level(config_path)
-    )
 
     logger.info(f"Using configuration: {config_path}")
     logger.info(f"Target manifest: {manifest_path}")
     console.print(f"[cyan]Using configuration: {config_path}[/cyan]")
 
     # 1. Gitignore — only the base_dir (config.yaml lives inside it)
-    gitignore_marker = f"# MAGS-CodeDev"
+    gitignore_marker = "# MAGS-CodeDev"
     gitignore_content = f"\n{gitignore_marker}\n{base_dir}/\n"
     if os.path.exists(".gitignore"):
         with open(".gitignore", "r") as f:
@@ -148,7 +142,6 @@ def init(
 
     # 5. Interactive Setup (Manifest & AGENT.md)
     manifest_created = False
-    agent_md_created = False
 
     # Offline mode disables interactive AI
     if offline:
@@ -288,9 +281,8 @@ def init(
 
     # Define paths for manual creation (used in both interactive and offline modes)
     agent_md_path = Path(base_dir) / "AGENT.md"
-    agent_md_created = agent_md_path.exists()
     # 6. Fallback / Manual Creation
-    if not agent_md_created and not agent_md_path.exists():
+    if not agent_md_path.exists():
         project_name = os.path.basename(os.getcwd())
         lang_name = init_backend.display_name
         agent_md_path.parent.mkdir(parents=True, exist_ok=True)

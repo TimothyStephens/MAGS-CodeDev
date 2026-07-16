@@ -1,8 +1,11 @@
+"""Configuration loader: YAML config, VS Code overrides, environment variables."""
+
 import os
 import yaml
 import json
 from pathlib import Path
 from typing import Optional
+
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -26,7 +29,7 @@ from mags_codedev.utils.logger import logger
 def ensure_config_structure(config: dict) -> dict:
     """Ensures the config dictionary has the modern structure, migrating if necessary."""
     models = config.get("models", {})
-    
+
     # Check if migration is needed (i.e., flat structure is present)
     needs_migration = False
     flat_keys = ["coder", "tester", "log_checker", "reviewers"]
@@ -34,7 +37,7 @@ def ensure_config_structure(config: dict) -> dict:
         if key in models:
             needs_migration = True
             break
-            
+
     if not needs_migration and ("build_workflow" in models or "interactive_commands" in models):
         return config
 
@@ -50,12 +53,12 @@ def ensure_config_structure(config: dict) -> dict:
             "reviewers": models.get("reviewers", [])
         }
     }
-    
+
     # Preserve any other keys in models
     for k, v in models.items():
         if k not in flat_keys and k != "chat":
             new_models[k] = v
-            
+
     config["models"] = new_models
     return config
 
@@ -78,7 +81,7 @@ def _resolve_env_api_keys(config: dict) -> None:
 
 def _resolve_env_models(config: dict) -> None:
     """Resolve models from environment variables.
-    
+
     Global override: MAGS_MODEL, MAGS_PROVIDER, MAGS_BASE_URL
     Role-specific override: MAGS_MODEL_<ROLE> (e.g., MAGS_MODEL_CODER)
     """
@@ -142,7 +145,7 @@ def load_config(config_path: Path = Path("config.yaml")) -> dict:
                 config = yaml.safe_load(f) or {}
         except Exception as e:
             logger.error(f"Failed to load config from {config_path}: {e}")
-            
+
     # Ensure structure is up to date
     config = ensure_config_structure(config)
 
@@ -155,8 +158,9 @@ def load_config(config_path: Path = Path("config.yaml")) -> dict:
             import re
             # Strip // comments (JSONC format)
             raw = re.sub(r'//.*?$', '', raw, flags=re.MULTILINE)
+            # Strip trailing commas (JSONC format)
+            raw = re.sub(r',(\s*[}\]])', r'\1', raw)
             vscode_settings = json.loads(raw)
-            # Parse "mags.api_keys.openai" -> config['api_keys']['openai']
             # Parse "mags-codedev.api_keys.openai" -> config['api_keys']['openai']
             for k, v in vscode_settings.items():
                 if k.startswith("mags-codedev.") or k.startswith("mags."):
@@ -282,8 +286,10 @@ def _create_llm_instance(
         )
 
     if role and llm:
-        # Attach the token logging callback automatically
-        llm.callbacks = [TokenLoggingCallbackHandler(role=role, model_name=model_name, base_dir=base_dir)]
+        # Attach the token logging callback automatically (append, don't overwrite)
+        if llm.callbacks is None:
+            llm.callbacks = []
+        llm.callbacks.append(TokenLoggingCallbackHandler(role=role, model_name=model_name, base_dir=base_dir))
 
     return llm
 
@@ -292,17 +298,17 @@ def get_llm(role: str, config_path: Path = Path("config.yaml")):
     """Returns the instantiated LangChain model for a specific agent role."""
     config = load_config(config_path)
     models_config = config.get("models", {})
-    
+
     # For backward compatibility, check new structure first, then old.
     build_config = models_config.get("build_workflow", {})
     interactive_config = models_config.get("interactive_commands", {})
-    
+
     model_config = build_config.get(role) or interactive_config.get(role) or models_config.get(role)
-    
+
     if not model_config:
         # Fallback to a default if the role is not defined anywhere
         model_config = {"provider": "openai", "model": "gpt-4o"}
-        
+
     api_keys = config.get("api_keys", {})
     base_dir = config.get("settings", {}).get("base_dir", ".mags-codedev")
     return _create_llm_instance(model_config, api_keys, role=role, base_dir=base_dir)
@@ -313,10 +319,17 @@ def get_reviewer_llms(config_path: Path = Path("config.yaml")) -> list:
     config = load_config(config_path)
     models_config = config.get("models", {})
     build_config = models_config.get("build_workflow", {})
-    
+
     # For backward compatibility, check new structure first, then old.
     reviewers_config = build_config.get("reviewers", []) or models_config.get("reviewers", [])
     api_keys = config.get("api_keys", {})
     base_dir = config.get("settings", {}).get("base_dir", ".mags-codedev")
     # We assign a generic role name for reviewers, or we could index them
-    return [_create_llm_instance(r, api_keys, role=f"reviewer_{r.get('model', 'unknown')}", base_dir=base_dir) for r in reviewers_config]
+    return [
+        _create_llm_instance(
+            r, api_keys,
+            role=f"reviewer_{r.get('model', 'unknown')}",
+            base_dir=base_dir,
+        )
+        for r in reviewers_config
+    ]

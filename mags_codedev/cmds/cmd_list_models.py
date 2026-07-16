@@ -11,7 +11,6 @@ from mags_codedev.utils.logger import logger
 from mags_codedev.utils.config_parser import load_config
 from mags_codedev.utils.cli_helpers import format_llm_error
 from mags_codedev.utils.cli_common import (
-    resolve_base_dir,
     find_default_config_path,
     _CONFIG_HELP_TEXT,
 )

@@ -1,12 +1,16 @@
-from langgraph.prebuilt import create_react_agent
-from langgraph.checkpoint.memory import MemorySaver
+"""Chat agent: interactive REPL with file read/write tools for debugging."""
+
 import os
-import pprint
 from pathlib import Path
-from langchain_core.tools import tool
+from typing import Any, Optional
+
 from langchain_core.messages import SystemMessage
+from langchain_core.tools import tool
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.prebuilt import create_react_agent
+
 from mags_codedev.utils.config_parser import get_llm, load_config
-from mags_codedev.utils.db import TokenLoggingCallbackHandler
+
 
 @tool
 def read_file(filepath: str) -> str:
@@ -18,12 +22,13 @@ def read_file(filepath: str) -> str:
         return f"Error: Path traversal detected. Cannot read from '{filepath}'."
 
     try:
-        with open(target_path, 'r') as f:
+        with open(target_path, "r") as f:
             return f.read()
     except FileNotFoundError:
         return f"Error: File not found at '{filepath}'."
     except Exception as e:
         return f"Error reading file: {e}"
+
 
 @tool
 def write_file(filepath: str, content: str) -> str:
@@ -36,22 +41,25 @@ def write_file(filepath: str, content: str) -> str:
 
     try:
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
-        with open(target_path, 'w') as f:
+        with open(target_path, "w") as f:
             f.write(content)
         return f"Successfully wrote to {filepath}"
     except Exception as e:
         return f"Error writing file: {e}"
+
+
 def start_chat_repl(
     config_path: Path,
-    system_message_override: str = None,
+    system_message_override: Optional[str] = None,
     command_name: str = "chat",
     offline: bool = False,
-):
+) -> Any:
     """Initializes and returns the Chat Agent graph for the CLI."""
     _ = load_config(config_path)
 
     if offline:
         from langchain_core.language_models import FakeListChatModel
+
         llm = FakeListChatModel(
             responses=[
                 "Offline mode. I cannot process LLM requests. "
@@ -60,10 +68,6 @@ def start_chat_repl(
         )
     else:
         llm = get_llm(role="chat", config_path=config_path)
-
-    # Clear any default callbacks attached by get_llm to avoid duplication.
-    # The specific TokenLoggingCallbackHandler is passed via config in cli.py.
-    llm.callbacks = []
 
     tools = [read_file, write_file]
 

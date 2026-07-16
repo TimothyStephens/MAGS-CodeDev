@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mags_codedev.backends.language_backend import LanguageBackend
 
 
 class PythonBackend:
@@ -23,21 +22,7 @@ class PythonBackend:
 
     default_base_image: str = "python:3.11-slim"
 
-    _core_test_deps: list[str] = [
-        "pytest",
-        "pytest-cov",
-        "flake8",
-        "mypy",
-        "bandit",
-    ]
-
     deps_filename: str = "requirements.txt"
-
-    def install_core_deps_command(self) -> str:
-        return f"pip install --no-cache-dir {' '.join(self._core_test_deps)}"
-
-    def install_project_deps_command(self, deps_file: Path) -> str:
-        return f"pip install --no-cache-dir -r /app/{deps_file}"
 
     # ── Local Runner ───────────────────────────────────────────────
 
@@ -50,15 +35,18 @@ class PythonBackend:
     # ── Tool Commands ──────────────────────────────────────────────
 
     def test_command(self, test_file: Path, source_module: str) -> str:
+        """Build the pytest command with coverage for a single test file."""
         return (
-            f"pytest {test_file} -v "
+            f"python -m pytest {test_file} -v "
             f"--cov={source_module} --cov-report=term-missing"
         )
 
     def test_command_project(self) -> str:
-        return "pytest -v"
+        """Build the pytest command to run all tests in the project."""
+        return "python -m pytest -v"
 
     def lint_command(self, target_file: Path) -> str:
+        """Build semicolon-separated lint, type-check, and security scan commands."""
         return (
             f"flake8 {target_file}; "
             f"mypy {target_file}; "
@@ -68,7 +56,7 @@ class PythonBackend:
     def lint_success_prefixes(self) -> list[str]:
         return ["Success: no issues found"]
 
-    def test_success_keywords(self) -> list[str]:
+    def test_failure_keywords(self) -> list[str]:
         """Keywords whose presence indicates test failure."""
         return ["FAILED", "ERROR"]
 

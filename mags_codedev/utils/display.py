@@ -56,8 +56,8 @@ def _token_str(info: dict) -> str:
 
 
 def _short_status(status: str) -> str:
-    """Strip 'Waiting: ' / 'Blocked: ' prefixes for cleaner display."""
-    for prefix in ("Waiting: ", "Blocked: "):
+    """Strip status prefixes for cleaner display."""
+    for prefix in ("Waiting: ", "Blocked: ", "Success: ", "Failed: ", "Error: "):
         if status.startswith(prefix):
             return status[len(prefix):]
     return status
@@ -123,16 +123,17 @@ def generate_status_table(status_dict: dict, module_map: Optional[dict] = None):
     # Compute totals from status_dict
     total_in = sum(info.get("tokens_in", 0) for info in status_dict.values())
     total_out = sum(info.get("tokens_out", 0) for info in status_dict.values())
-    total = total_in + total_out
     completed = sum(1 for info in status_dict.values() if "Completed" in info.get("status", ""))
-    failed = sum(1 for info in status_dict.values() if "Failed" in info.get("status", "") or "Error" in info.get("status", ""))
+    failed = sum(
+        1 for info in status_dict.values()
+        if "Failed" in info.get("status", "") or "Error" in info.get("status", "")
+    )
     blocked = sum(1 for info in status_dict.values() if "Blocked" in info.get("status", ""))
     waiting = len(status_dict) - completed - failed - blocked
 
     tok_str = _token_str({"tokens_in": total_in, "tokens_out": total_out})
     footer = (
-        f"[dim]─[/dim]" * 40 + "\n"
-        f"  [bold]Total:[/bold] {completed} ✓ completed, {failed} ✗ failed, "
+        "[dim]─[/dim]" * 40 + "\n"
         f"{blocked} ⚠ blocked, {waiting} ◌ waiting  "
         f"[dim]{tok_str}[/dim]"
     )
@@ -170,7 +171,10 @@ def _flat_table(status_dict: dict):
     total_in = sum(info.get("tokens_in", 0) for info in status_dict.values())
     total_out = sum(info.get("tokens_out", 0) for info in status_dict.values())
     completed = sum(1 for info in status_dict.values() if "Completed" in info.get("status", ""))
-    failed = sum(1 for info in status_dict.values() if "Failed" in info.get("status", "") or "Error" in info.get("status", ""))
+    failed = sum(
+        1 for info in status_dict.values()
+        if "Failed" in info.get("status", "") or "Error" in info.get("status", "")
+    )
     blocked = sum(1 for info in status_dict.values() if "Blocked" in info.get("status", ""))
     waiting = len(status_dict) - completed - failed - blocked
     tok_str = _token_str({"tokens_in": total_in, "tokens_out": total_out})

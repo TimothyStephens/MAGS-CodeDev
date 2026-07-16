@@ -1,5 +1,6 @@
 """Shared retry helpers for LLM agent calls."""
 
+import re
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
@@ -9,9 +10,14 @@ except ImportError:
     ServerError = None  # type: ignore[assignment, misc]
 
 
+# Retry configuration
+DEFAULT_MAX_RETRIES: int = 5
+EXPONENTIAL_MULTIPLIER: float = 2
+EXPONENTIAL_MIN_WAIT: float = 4
+EXPONENTIAL_MAX_WAIT: float = 60
+
 def _is_retryable_error(exception: BaseException) -> bool:
     """Check if the exception is a transient API error worth retrying."""
-
     # Explicitly handle Google GenAI ServerError
     if ServerError is not None and isinstance(exception, ServerError):
         try:
@@ -35,13 +41,13 @@ def _is_retryable_error(exception: BaseException) -> bool:
     if isinstance(exception, httpx.RemoteProtocolError):
         return True
 
-    # Fallback: check error message string
+    # Fallback: check error message string (use word boundaries to avoid false positives)
     msg = str(exception).lower()
     return (
-        "503" in msg
+        re.search(r"\b503\b", msg)
         or "unavailable" in msg
         or "rate limit" in msg
-        or "429" in msg
+        or re.search(r"\b429\b", msg)
         or "resource_exhausted" in msg
         or "server disconnected" in msg
     )
@@ -52,8 +58,8 @@ def invoke_with_retry(chain, inputs: dict):
 
     @retry(
         retry=retry_if_exception(_is_retryable_error),
-        stop=stop_after_attempt(5),
-        wait=wait_exponential(multiplier=2, min=4, max=60),
+        stop=stop_after_attempt(DEFAULT_MAX_RETRIES),
+        wait=wait_exponential(multiplier=EXPONENTIAL_MULTIPLIER, min=EXPONENTIAL_MIN_WAIT, max=EXPONENTIAL_MAX_WAIT),
         reraise=True,
     )
     def _invoke():

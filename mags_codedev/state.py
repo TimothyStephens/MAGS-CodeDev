@@ -1,3 +1,5 @@
+"""ModuleState TypedDict: shared state schema for LangGraph nodes."""
+
 from __future__ import annotations
 from typing import TYPE_CHECKING, TypedDict, List, Dict, Any, Optional
 from pathlib import Path

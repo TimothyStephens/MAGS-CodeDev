@@ -1,5 +1,11 @@
-from langgraph.constants import END, START
+"""LangGraph workflow: build function graph with test/lint/review routes."""
+
+import hashlib
+from typing import Any
+
+from langgraph.constants import END
 from langgraph.graph import StateGraph
+
 from mags_codedev.state import ModuleState
 
 from mags_codedev.agents.coder import coder_node
@@ -8,10 +14,7 @@ from mags_codedev.utils.docker_ops import test_node, linter_node
 from mags_codedev.agents.log_checker import log_checker_node
 from mags_codedev.agents.reviewer import multi_llm_review_node
 
-import hashlib
-
-
-# ---- Module-level edge functions (extracted for testability — FIX Bug #4) ----
+# ---- Module-level edge functions (extracted for testability) ----
 
 def evaluate_test_results(state: ModuleState) -> str:
     """Check if tests passed, failed, or max iterations reached."""
@@ -21,7 +24,7 @@ def evaluate_test_results(state: ModuleState) -> str:
 
     backend = state.get("backend")
     failure_keywords = (
-        backend.test_success_keywords() if backend
+        backend.test_failure_keywords() if backend
         else ["FAILED", "ERROR"]
     )
     test_results = state.get("test_results", "")
@@ -32,11 +35,11 @@ def evaluate_test_results(state: ModuleState) -> str:
         return "tests_failed"
 
     # Check for "no tests collected" (pytest exit code 5)
+    # M14: Removed "deselected" — false positive with pytest -k filter
     no_tests_indicators = [
         "collected 0 items",
         "no tests ran",
         "no tests collected",
-        "deselected",
     ]
     if any(ind in test_results.lower() for ind in no_tests_indicators):
         return "tests_failed"
@@ -83,21 +86,20 @@ def evaluate_logs(state: ModuleState) -> str:
     return "clean"
 
 
-
 def evaluate_reviews(state: ModuleState) -> str:
     """Check if review found issues, and route accordingly."""
     max_rounds = state.get("max_review_rounds", 3)
     if max_rounds > 0 and state.get("review_round_count", 0) >= max_rounds:
         return "max_review_rounds_reached"
 
-    if state.get("review_comments") and len(state["review_comments"]) > 0:
+    if state.get("review_comments"):
         return "revise"
     return "approved"
 
 
 def check_convergence(state: ModuleState) -> dict:
     """Node: Check if code/tests have converged (identical to previous iteration).
-    
+
     If code hash matches previous_code_hash for 2+ consecutive iterations, mark as failed.
     Same check for test hash. Otherwise, update hashes for next comparison.
     """
@@ -109,7 +111,7 @@ def check_convergence(state: ModuleState) -> dict:
     previous_code_hash = state.get("previous_code_hash")
     previous_test_hash = state.get("previous_test_hash")
 
-    # FIX M3: Check both code and test convergence
+    # Check both code and test convergence
     if previous_code_hash and current_code_hash and current_code_hash == previous_code_hash:
         return {
             "status": "failed",
@@ -128,9 +130,17 @@ def check_convergence(state: ModuleState) -> dict:
     }
 
 
+# L2: Moved to module level to avoid recreating on every build_function_graph() call
+def check_convergence_route(state: ModuleState) -> str:
+    """Route after convergence check: end if failed, else proceed to review."""
+    if state.get("status") == "failed":
+        return "__end__"
+    return "multi_llm_review"
+
+
 # ---- Graph construction ----
 
-def build_function_graph():
+def build_function_graph() -> Any:
     """Build the LangGraph state machine for module generation."""
     workflow = StateGraph(ModuleState)
 
@@ -175,12 +185,6 @@ def build_function_graph():
     )
 
     # C. Convergence check → review or fail
-    # FIX M4: Return string key instead of END sentinel for reliable matching
-    def check_convergence_route(state: ModuleState) -> str:
-        if state.get("status") == "failed":
-            return "__end__"
-        return "multi_llm_review"
-
     workflow.add_conditional_edges(
         "check_convergence",
         check_convergence_route,

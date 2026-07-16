@@ -1,3 +1,5 @@
+"""Agent nodes for the MAGs-CodeDev build workflow."""
+
 from mags_codedev.agents.coder import coder_node
 from mags_codedev.agents.tester import tester_node
 from mags_codedev.agents.log_checker import log_checker_node

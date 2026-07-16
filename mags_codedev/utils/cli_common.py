@@ -147,7 +147,7 @@ def validate_config_connections(config_path: Path) -> bool:
             llm = get_llm(role, config_path)
             model_name = getattr(llm, 'model_name', getattr(llm, 'model', 'unknown'))
             console.print(f"Checking [bold]{role}[/bold] ({model_name})...", end=" ")
-            response = llm.invoke([HumanMessage(content="Test")])
+            llm.invoke([HumanMessage(content="Test")])
             console.print("[green]OK[/green]")
             logger.debug(f"Connection verified for {role} ({model_name}).")
         except Exception as e:
@@ -162,7 +162,7 @@ def validate_config_connections(config_path: Path) -> bool:
             try:
                 model_name = getattr(llm, 'model_name', getattr(llm, 'model', 'unknown'))
                 console.print(f"Checking [bold]Reviewer {i+1}[/bold] ({model_name})...", end=" ")
-                response = llm.invoke([HumanMessage(content="Test")])
+                llm.invoke([HumanMessage(content="Test")])
                 console.print("[green]OK[/green]")
                 logger.debug(f"Connection verified for Reviewer {i+1} ({model_name}).")
             except Exception as e:

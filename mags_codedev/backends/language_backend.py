@@ -5,9 +5,8 @@ layer (graph, CLI, docker_ops, agents) never touches language-specific
 commands, prompts, or environment variables directly.
 """
 
-from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from pathlib import Path
 from typing import Protocol
 
@@ -35,16 +34,6 @@ class LanguageBackend(Protocol):
     @abstractmethod
     def default_base_image(self) -> str:
         """Docker base image, e.g. 'python:3.11-slim'."""
-        ...
-
-    @abstractmethod
-    def install_core_deps_command(self) -> str:
-        """Full install command for core test/lint deps in Dockerfile."""
-        ...
-
-    @abstractmethod
-    def install_project_deps_command(self, deps_file: Path) -> str:
-        """Full install command for project deps in Dockerfile."""
         ...
 
     @property
@@ -90,7 +79,7 @@ class LanguageBackend(Protocol):
         ...
 
     @abstractmethod
-    def test_success_keywords(self) -> list[str]:
+    def test_failure_keywords(self) -> list[str]:
         """Keywords indicating test failure (checked in graph.py)."""
         ...
 

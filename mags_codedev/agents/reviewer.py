@@ -1,21 +1,18 @@
+"""Reviewer agent: multi-LLM code review with LGTM/vote aggregation."""
+
 import asyncio
 import logging
+import re
 from langchain_core.prompts import ChatPromptTemplate
 from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import get_reviewer_llms
-from mags_codedev.utils.logger import logger
-
+from mags_codedev.utils.llm_helpers import resolve_logger
 
 async def _get_review(llm, state: ModuleState) -> str:
     """Helper function to execute a single review asynchronously with retry logic."""
     model_name = getattr(llm, 'model_name', getattr(llm, 'model', 'unknown'))
 
-    if state.get("log_filepath"):
-        import os
-        log_hash = os.path.basename(state["log_filepath"]).replace(".log", "")
-        func_logger = logging.getLogger(f"mags.func.{log_hash}")
-    else:
-        func_logger = logger
+    func_logger = resolve_logger(state.get("log_filepath"))
     system_prompt = (
         "You are a strict Code Reviewer.\n"
         "Review this code for: correctness, edge case handling, naming conventions,\n"
@@ -56,8 +53,11 @@ async def _get_review(llm, state: ModuleState) -> str:
 
     func_logger.info(f"Reviewer ({model_name}): Sending prompt for '{state['module_location']}'.")
     # The debug log will go to the file, not the console, per logger.py setup
-    func_logger.debug(f"Reviewer Prompt for {model_name}:\n{prompt.format(spec=str(state['spec']), code=state['code'])}")
-
+    func_logger.debug(
+        "Reviewer Prompt for %s:\n%s",
+        model_name,
+        prompt.format(spec=str(state["spec"]), code=state["code"]),
+    )
     try:
         chain = prompt | llm
         response = await chain.ainvoke({
@@ -114,8 +114,8 @@ async def multi_llm_review_node(state: ModuleState) -> dict:
             "review_round_count": current_rounds + 1,
         }
 
-    # Filter out LGTM approvals, keep only actionable critiques
-    actionable_comments = [r for r in reviews if "LGTM" not in r.upper()]
+    # B16: Use word boundary regex — "Not LGTM" should NOT be treated as approval
+    actionable_comments = [r for r in reviews if not re.search(r"\bLGTM\b", r, re.IGNORECASE)]
     status = "success" if not actionable_comments else "in_progress"
 
     current_rounds = state.get("review_round_count", 0)

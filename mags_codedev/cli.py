@@ -17,21 +17,6 @@ app = typer.Typer(
 console = Console()
 
 # -------------------------------------------------------------------
-# Re-export shared constants/helpers for backwards compatibility
-# -------------------------------------------------------------------
-
-from mags_codedev.utils.cli_common import (
-    _DEFAULT_BASE_DIR,
-    _USER_DEFAULT_CONFIG,
-    _PACKAGE_CONFIG_PATH,
-    _CONFIG_HELP_TEXT,
-    _bootstrap_config,
-    find_default_config_path,
-    resolve_base_dir,
-    validate_config_connections,
-)
-
-# -------------------------------------------------------------------
 # Register commands from cmd modules
 # -------------------------------------------------------------------
 

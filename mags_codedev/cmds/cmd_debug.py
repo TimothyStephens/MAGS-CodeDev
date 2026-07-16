@@ -1,10 +1,8 @@
 """Debug command: pass an error trace to the LLM for automatic fixing."""
 
 import os
-import re
 import json
 import asyncio
-import datetime
 import typer
 from typing import Optional
 from pathlib import Path
@@ -14,13 +12,13 @@ from rich.panel import Panel
 
 from langchain_core.prompts import ChatPromptTemplate
 
-from mags_codedev.utils.logger import setup_logger, logger, get_session_logger
+from mags_codedev.utils.logger import setup_logger, logger
 from mags_codedev.utils.db import (
     hash_spec,
     TokenLoggingCallbackHandler,
 )
 from mags_codedev.utils.config_parser import get_llm
-from mags_codedev.utils.cli_helpers import extract_content, format_llm_error
+from mags_codedev.utils.cli_helpers import extract_content
 from mags_codedev.cmds.cmd_build import process_module
 from mags_codedev.utils.cli_common import (
     resolve_base_dir,
@@ -71,12 +69,6 @@ def debug(
     log_level = verbose_levels.get(verbose, "info")
     setup_logger(base_dir=base_dir, log_level=log_level)
 
-    # Per-session log for debugging debug invocations
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    debug_logger = get_session_logger(
-        f"debug-{ts}", base_dir=base_dir, log_level=log_level
-    )
-    debug_logger.info("Debug command started")
 
     # Default manifest to <base_dir>/manifest.json if not specified
     if manifest_path is None:
@@ -96,21 +88,27 @@ def debug(
             console.print(f"[red]Error reading file '{error_msg}': {e}[/red]")
             raise typer.Exit(1)
     else:
+        # H8: Only match .log files or SHA-256 hash filenames
         words = error_msg.split()
         for word in words:
             clean_word = word.strip(".,;:'\"")
-            if os.path.exists(clean_word) and os.path.isfile(clean_word):
-                is_log_file = True
-                log_file_path = clean_word
-                try:
-                    with open(clean_word, "r") as f:
-                        console.print(f"[cyan]Reading error trace from file: {clean_word}[/cyan]")
-                        file_content = f.read()
-                        error_msg = f"{error_msg}\n\n--- Log File Content ---\n{file_content}"
-                except Exception as e:
-                    console.print(f"[red]Error reading file '{clean_word}': {e}[/red]")
-                    raise typer.Exit(1)
-                break
+            if not os.path.exists(clean_word) or not os.path.isfile(clean_word):
+                continue
+            basename = os.path.basename(clean_word)
+            if not (basename.endswith(".log") or
+                    (len(basename) == 64 and all(c in '0123456789abcdef' for c in basename))):
+                continue
+            is_log_file = True
+            log_file_path = clean_word
+            try:
+                with open(clean_word, "r") as f:
+                    console.print(f"[cyan]Reading error trace from file: {clean_word}[/cyan]")
+                    file_content = f.read()
+                    error_msg = f"{error_msg}\n\n--- Log File Content ---\n{file_content}"
+            except Exception as e:
+                console.print(f"[red]Error reading file '{clean_word}': {e}[/red]")
+                raise typer.Exit(1)
+            break
 
     # Auto-detect function from log file if not provided
     if is_log_file and not module_location:

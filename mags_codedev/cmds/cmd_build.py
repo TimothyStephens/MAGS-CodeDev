@@ -4,7 +4,6 @@ import os
 import json
 import asyncio
 import shutil
-import logging
 import typer
 import git
 from typing import Optional
@@ -13,7 +12,6 @@ from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 from rich.live import Live
-from rich.console import Group
 
 from mags_codedev.state import ModuleState
 from mags_codedev.graph import build_function_graph
@@ -29,17 +27,14 @@ from mags_codedev.utils.cli_common import (
     _CONFIG_HELP_TEXT,
 )
 from mags_codedev.utils.logger import setup_logger, logger, get_function_logger
-from mags_codedev.backends import get_backend
-from mags_codedev.utils.cli_common import (
-    resolve_base_dir,
-    find_default_config_path,
-    _CONFIG_HELP_TEXT,
-)
+from mags_codedev.utils.config_parser import load_config
 from mags_codedev.utils.display import generate_status_table
+from mags_codedev.utils.git_ops import (
+    validate_git_repo, create_parallel_worktree, merge_and_cleanup_worktree,
+)
+from mags_codedev.backends import get_backend
 
 console = Console()
-
-
 async def process_module(
     module_location: str,
     spec: dict,
@@ -55,7 +50,7 @@ async def process_module(
     worktree_path = None
     branch_name = f"feature/{module_location}"
     func_logger = None
-    log_filename = "main log"
+    log_filepath = None
 
     try:
         func_hash = hash_spec(spec)
@@ -187,7 +182,7 @@ async def process_module(
                 "max_review_rounds": max_review_rounds,
                 "review_round_count": 0,
 
-                "offline": offline,
+                "base_dir": base_dir,
                 "status": "in_progress",
             }
 
@@ -266,20 +261,18 @@ async def process_module(
                     f"Final Error Summary: {final_state.get('test_error_summary', 'None')}"
                 )
 
-            # Always write latest code/tests to worktree
-            output_path = os.path.join(worktree_path, spec['location'])
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            if final_state.get('code'):
+            # Write code/tests to worktree only on success (needed for git commit)
+            test_output_path = test_path
+            if success and final_state.get('code'):
+                output_path = os.path.join(worktree_path, spec['location'])
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
                 with open(output_path, "w") as f:
                     f.write(final_state['code'])
 
-            test_output_path = test_path
-            os.makedirs(os.path.dirname(test_output_path), exist_ok=True)
-            if final_state.get('tests'):
-                with open(test_output_path, "w") as f:
-                    f.write(final_state.get('tests'))
-
-            # Commit if successful
+                os.makedirs(os.path.dirname(test_output_path), exist_ok=True)
+                if final_state.get('tests'):
+                    with open(test_output_path, "w") as f:
+                        f.write(final_state.get('tests'))
             if success:
                 status_dict[module_location]["status"] = "Committing to Branch..."
                 repo = git.Repo(worktree_path)
@@ -313,7 +306,7 @@ async def process_module(
         effective_logger = func_logger if func_logger else logger
         effective_logger.exception(f"Error processing {module_location}")
 
-        logger.error(f"Error processing {module_location} (see {log_filename}): {e}")
+        logger.error(f"Error processing {module_location} (see {log_filepath}): {e}")
         status_dict[module_location]["status"] = f"Error: {str(e)}"
 
         if worktree_path:
@@ -322,8 +315,6 @@ async def process_module(
                     merge_and_cleanup_worktree,
                     branch_name, worktree_path, False, base_dir=resolve_base_dir(config_path)
                 )
-    finally:
-        pass  # get_function_logger manages handler lifecycle
 
 
 def build(
@@ -436,7 +427,6 @@ def build(
     )
 
     async def run_builds():
-        nonlocal built_modules
         failed_modules: set = set()
 
         status_dict = {}
@@ -574,10 +564,6 @@ def build(
                     console.print(f"  - [red]{loc}[/red] — {info.get('status', 'Failed')}")
                     if info.get("worktree") and os.path.exists(info["worktree"]):
                         console.print(f"    Worktree: [blue]{info['worktree']}[/blue]")
-                        # Backup path (created if merge attempted)
-                        backup = os.path.join(base_dir, "merges", os.path.basename(info["worktree"]))
-                        if os.path.exists(backup):
-                            console.print(f"    Backup: [blue]{backup}[/blue]")
                     console.print(f"    Log: [blue]{info.get('log_file', '')}[/blue]")
                     console.print(f"    Tokens: {info.get('tokens_in', 0) + info.get('tokens_out', 0):,}")
 

@@ -1,24 +1,23 @@
+"""Coder agent: generates or fixes module source code via LLM."""
+
 from pathlib import Path
 from langchain_core.prompts import ChatPromptTemplate
 from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import get_llm
 from mags_codedev.utils.retry import invoke_with_retry
-from mags_codedev.utils.llm_helpers import get_function_logger, strip_markdown_code
+from mags_codedev.utils.llm_helpers import resolve_logger, strip_markdown_code
 
 
 def coder_node(state: ModuleState) -> dict:
     """Generates or updates the code based on specifications and feedback."""
     config_path = state["config_path"]
-    func_logger = get_function_logger(state.get("log_filepath"))
+    func_logger = resolve_logger(state.get("log_filepath"))
     backend = state.get("backend")
 
     # Determine context based on whether this is a first run or a fix
     is_fix = state.get("iteration_count", 0) > 0
     feedback = ""
     prompt_narrative = "Write the initial implementation of this module."
-
-    if backend:
-        prompt_narrative = backend.coder_system_prompt()
 
     if is_fix:
         # FIX Bug #1: Include review_comments AND test_error_summary in feedback
@@ -32,7 +31,7 @@ def coder_node(state: ModuleState) -> dict:
         # Include review comments if present (from multi_llm_review) — FIX Bug #1
         review_comments = state.get("review_comments", [])
         if review_comments:
-            feedback_parts.append(f"REVIEW COMMENTS:\n" + "\n".join(f"- {c}" for c in review_comments))
+            feedback_parts.append("REVIEW COMMENTS:\n" + "\n".join(f"- {c}" for c in review_comments))
 
         # Always include existing code so the coder knows what to change
         if state.get("code"):
@@ -108,7 +107,15 @@ def coder_node(state: ModuleState) -> dict:
         f"(iteration {state.get('iteration_count', 0) + 1})."
     )
     func_logger.debug(
-        f"Coder Prompt:\n{prompt.format(module_location=state['module_location'], spec=str(state['spec']), project_instructions_block=project_instructions_block, dependency_context=dependency_context, prompt_narrative=prompt_narrative, feedback=feedback)}"
+        "Coder Prompt:\n%s",
+        prompt.format(
+            module_location=state["module_location"],
+            spec=str(state["spec"]),
+            project_instructions_block=project_instructions_block,
+            dependency_context=dependency_context,
+            prompt_narrative=prompt_narrative,
+            feedback=feedback,
+        ),
     )
 
     # Offline mode: generate stub without API call

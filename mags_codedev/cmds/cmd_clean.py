@@ -1,6 +1,5 @@
 """Clean command: remove generated cache files, logs, and worktrees."""
 
-import os
 import shutil
 import typer
 from pathlib import Path
@@ -32,10 +31,6 @@ def clean(
     console.print(Panel("[bold yellow]Cleaning up MAGs-CodeDev artifacts...[/bold yellow]"))
 
     mags_dir = Path(base_dir)
-    worktree_dirs = [
-        d for d in os.listdir(base_dir)
-        if d.startswith("worktree_") and os.path.isdir(os.path.join(base_dir, d))
-    ] if mags_dir.exists() else []
 
     items_to_delete = []
     if mags_dir.exists():

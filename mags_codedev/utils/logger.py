@@ -1,7 +1,7 @@
 """Logging setup for MAGs-CodeDev.
 
 Provides a root logger with console and rotating file handlers,
-plus per-module and per-session child loggers that propagate upward
+plus per-module child loggers that propagate upward
 so all logs flow into workflow.log while also being written to
 individual files in the logs/ subdirectory.
 
@@ -13,17 +13,11 @@ Logger hierarchy:
 
     mags_codedev.func.<hash>              ← per-module logger (build)
     └── logs/<hash>.log (RotatingFileHandler) ← 5 MB × 5 backups, propagate=True
-
-    mags_codedev.session.<id>             ← per-session logger (chat, debug, etc.)
-    └── logs/<id>.log (RotatingFileHandler) ← 5 MB × 5 backups, propagate=True
 """
-
-from __future__ import annotations
 
 import logging
 import os
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
 from typing import Optional
 
 logging.addLevelName(5, "TRACE")
@@ -94,7 +88,7 @@ def setup_logger(
         Level for the console handler.  Defaults to *log_level* when ``None``.
 
     Returns the root ``mags_codedev`` logger.  All child loggers
-    (``mags_codedev.func.*``, ``mags_codedev.session.*``) propagate
+    (``mags_codedev.func.*``) propagate
     upward so their messages also reach ``workflow.log`` and the console.
     """
     os.makedirs(base_dir, exist_ok=True)
@@ -169,35 +163,3 @@ def get_function_logger(
     return child
 
 
-def get_session_logger(
-    session_id: str,
-    *,
-    base_dir: str = ".mags-codedev",
-    log_level: str = "info",
-) -> logging.Logger:
-    """Return a per-session logger (chat, debug, init, etc.).
-
-    Creates ``mags_codedev.session.<session_id>`` with a
-    RotatingFileHandler writing to ``<base_dir>/logs/<session_id>.log``.
-    Propagates upward so messages also reach ``workflow.log``.
-    """
-    child_name = f"mags_codedev.session.{session_id}"
-    child = logging.getLogger(child_name)
-    level = _level_for(log_level)
-
-    # Always replace handlers
-    for h in list(child.handlers):
-        h.close()
-        child.removeHandler(h)
-    child.setLevel(level)
-    child.propagate = True  # flow into workflow.log
-
-    log_path = os.path.join(base_dir, _LOG_DIR, f"{session_id}.log")
-    child.addHandler(_make_handler(log_path, level))
-
-    return child
-
-
-def is_debug_enabled(logger: logging.Logger) -> bool:
-    """Check if DEBUG level is enabled — guards expensive formatting."""
-    return logger.isEnabledFor(logging.DEBUG)

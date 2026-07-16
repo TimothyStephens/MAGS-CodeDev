@@ -1,15 +1,17 @@
+"""Tester agent: generates or fixes pytest unit tests via LLM."""
+
 from langchain_core.prompts import ChatPromptTemplate
 from pathlib import Path
 from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import get_llm
 from mags_codedev.utils.retry import invoke_with_retry
-from mags_codedev.utils.llm_helpers import get_function_logger, strip_markdown_code
+from mags_codedev.utils.llm_helpers import resolve_logger, strip_markdown_code
 
 
 def tester_node(state: ModuleState) -> dict:
     """Writes comprehensive unit tests."""
     config_path = state["config_path"]
-    func_logger = get_function_logger(state.get("log_filepath"))
+    func_logger = resolve_logger(state.get("log_filepath"))
     backend = state.get("backend")
 
     source_location = state["module_location"]
