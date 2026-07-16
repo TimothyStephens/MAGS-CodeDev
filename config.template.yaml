@@ -4,6 +4,7 @@ api_keys:
   openai: "sk-..."
   anthropic: "sk-ant-..."
   gemini: "AIza..."
+  ollama: "ollama-api-key-..."  # For local providers (ollama, vLLM, LM Studio)
 
 models:
   # ===================================================================
@@ -43,21 +44,62 @@ models:
         model: "gemini-2.5-pro"
       - provider: "anthropic"
         model: "claude-3-5-sonnet-20240620"
-      # Example of a Locally Hosted Model (e.g., Ollama, vLLM, LM Studio)
-      # Uses the 'custom_openai' provider to route through LangChain's ChatOpenAI
-      # class but points to your local machine's port.
-      - provider: "custom_openai"
-        model: "llama3:70b" # The exact model name your local server expects
-        base_url: "http://localhost:11434/v1" # Standard port for Ollama API
-        api_key: "ollama" # Dummy key to satisfy the Langchain client
+      # --- Local LLM Examples (pick one that matches your setup) ---
+
+      # Option 1: Ollama (native ChatOllama, requires langchain-ollama)
+      #   pip install langchain-ollama
+      # - provider: "ollama"
+      #   model: "llama3.1"  # Must match Ollama's model name
+      #   base_url: "http://localhost:11434"  # Default; omit if using default
+      #   num_ctx: 8192  # Optional: context window size
+
+      # Option 2: Any OpenAI-compatible server (vLLM, LM Studio, Ollama /v1)
+      #   No extra pip install needed; uses ChatOpenAI under the hood
+      # - provider: "local"
+      #   model: "Qwen2.5-72B"
+      #   base_url: "http://localhost:8000/v1"  # vLLM or LM Studio port
+
+      # Option 3: custom_openai (same as 'local', legacy name)
+      # - provider: "custom_openai"
+      #   model: "llama3:70b"
+      #   base_url: "http://localhost:11434/v1"  # Ollama OpenAI-compatible endpoint
+      #   api_key: "ollama"  # Dummy key to satisfy LangChain client
 
 settings:
   language: "python" # Target language: 'python' (others coming soon)
-  test_runner: "docker" # Runner for tests: 'docker', 'apptainer', or 'local'
-  python_base_image: "python:3.11-slim" # Override base image (optional; backend provides default)
-  system_dependencies: ["build-essential", "pkg-config"] # System-level packages to install via apt-get (e.g., ["build-essential", "libpq-dev"])
-  max_parallel_modules: 4 # How many modules to build concurrently
-  docker_test_image: "mags-dev-env:latest" # Name for the Docker test image. Will be built automatically if not found.
-  apptainer_test_image: "mags-dev-env.sif" # Name for the Apptainer test image. Will be built automatically if not found.
-  timeout_per_module_mins: 15 # Max time before a LangGraph run aborts
-  max_iterations: 5 # Max number of fix attempts before aborting. Set to 0 for unlimited.
+  
+  # Container runtime for isolated test execution.
+  # 'auto' (default): auto-detects best available (podman > docker > apptainer > singularity > local).
+  # Explicit options: 'podman', 'docker', 'apptainer', 'singularity', 'local'.
+  test_runner: "auto"
+  
+  # Override base image (optional; backend provides default)
+  python_base_image: "python:3.11-slim"
+  
+  # System-level packages to install via apt-get (e.g., ["build-essential", "libpq-dev"])
+  system_dependencies: ["build-essential", "pkg-config"]
+  
+  # How many modules to build concurrently
+  max_parallel_modules: 4
+  
+  # Budgets for fix/review cycles (set to 0 for unlimited)
+  max_test_fix_iterations: 5  # Max test/lint fix attempts before aborting
+  max_review_rounds: 3  # Max review revision rounds before aborting
+  
+  # Container image names (auto-built if not found)
+  podman_test_image: "mags-dev-env:latest"
+  docker_test_image: "mags-dev-env:latest"
+  apptainer_test_image: "mags-dev-env.sif"
+  
+  # Max time before a LangGraph run aborts
+  timeout_per_module_mins: 15
+  
+  # Base artifact directory (logs, worktrees, artifacts)
+  base_dir: ".mags-codedev"
+  
+  # Logging level: 'info', 'debug', 'trace'
+  log_level: "info"
+
+  # Merge policy: 'auto' merges worktree to main automatically,
+  # 'prompt' asks before merging (default: auto)
+  merge_policy: "auto"

@@ -9,7 +9,6 @@ from mags_codedev.utils.llm_helpers import get_function_logger, strip_markdown_c
 def tester_node(state: ModuleState) -> dict:
     """Writes comprehensive unit tests."""
     config_path = state["config_path"]
-    llm = get_llm(role="tester", config_path=config_path)
     func_logger = get_function_logger(state.get("log_filepath"))
     backend = state.get("backend")
 
@@ -24,9 +23,32 @@ def tester_node(state: ModuleState) -> dict:
             f"The module to test is '{source_location}'. "
             f"You can import from it using `from {module_path} import ...`."
         )
+    # Build project instructions block
+    project_instructions = state.get("project_instructions", "")
+    project_instructions_block = ""
+    if project_instructions:
+        project_instructions_block = (
+            "PROJECT INSTRUCTIONS\n"
+            "These are project-wide guidelines and conventions.\n\n"
+            + project_instructions + "\n\n"
+        )
 
+    # Build dependency context block
+    dep_code = state.get("dependency_code", {})
+    dependency_context = ""
+    if dep_code:
+        dep_parts = []
+        for loc, source in dep_code.items():
+            dep_parts.append(f"--- File: {loc} ---\n```python\n{source}\n```")
+        dependency_context = (
+            "DEPENDENCY CONTEXT\n"
+            "These are the source files this module depends on.\n"
+            "Use them to understand available functions, classes, and types.\n\n"
+            + "\n\n".join(dep_parts) + "\n\n"
+        )
     # Check if we are in a fix cycle for tests
-    is_fix = bool(state.get("error_summary")) and state.get("error_location") == "TEST_CODE"
+    # Use test_error_summary instead of error_summary (scoped tracking)
+    is_fix = bool(state.get("test_error_summary")) and state.get("error_location") == "TEST_CODE"
 
     # System prompt: prefer backend
     if backend:
@@ -46,27 +68,39 @@ def tester_node(state: ModuleState) -> dict:
     # Human template: prefer backend
     if is_fix:
         if backend:
-            human_template = backend.test_human_template_fix()
+            human_template = project_instructions_block + dependency_context + backend.test_human_template_fix()
         else:
             human_template = (
+                project_instructions_block +
+                dependency_context +
                 "The previous attempt to write tests failed. Please fix them.\n\n"
                 "Module Specification:\n{spec}\n\n"
                 "Generated Code to Test:\n{code}\n\n"
                 "PREVIOUS (BROKEN) TESTS:\n{previous_tests}\n\n"
-                "DIAGNOSIS OF FAILURE:\n{error_summary}\n\n"
+                "DIAGNOSIS OF FAILURE:\n{test_error_summary}\n\n"
+                "{review_feedback}\n"
                 "Your task is to provide a new, corrected version of the unit tests."
             )
+        # Build review feedback if review comments mention tests
+        review_feedback = ""
+        review_comments = state.get("review_comments", [])
+        test_reviews = [c for c in review_comments if "test" in c.lower()]
+        if test_reviews:
+            review_feedback = "REVIEW COMMENTS ABOUT TESTS:\n" + "\n".join(f"- {c}" for c in test_reviews) + "\n\n"
         invoke_params = {
             "spec": str(state["spec"]),
             "code": state["code"],
             "previous_tests": state["tests"],
-            "error_summary": state["error_summary"],
+            "test_error_summary": state["test_error_summary"],
+            "review_feedback": review_feedback,
         }
     else:
         if backend:
-            human_template = backend.test_human_template_initial()
+            human_template = project_instructions_block + dependency_context + backend.test_human_template_initial()
         else:
             human_template = (
+                project_instructions_block +
+                dependency_context +
                 "Module Specification:\n{spec}\n\n"
                 "Generated Code to Test:\n{code}"
             )
@@ -83,12 +117,44 @@ def tester_node(state: ModuleState) -> dict:
     func_logger.info(f"Tester: Sending prompt for '{state['module_location']}'.")
     func_logger.debug(f"Tester Prompt:\n{prompt.format(**invoke_params)}")
 
-    chain = prompt | llm
-    response = invoke_with_retry(chain, invoke_params)
-
-    func_logger.debug(f"Tester Response:\n{response.content}")
-
-    response_content = strip_markdown_code(response.content)
+    # Offline mode: generate stub tests without API call
+    if state.get("offline"):
+        module_name = Path(state["module_location"]).stem
+        response_content = (
+            f"import pytest\n\n\n"
+            f"class Test{module_name.replace('_', ' ').title().replace(' ', '')}:\n"
+            f'    """Test {module_name}."""\n'
+            f"\n"
+            f"    def test_{module_name}_main(self):\n"
+            f'        """Test {module_name}_main."""\n'
+            f"        pass\n"
+        )
+        func_logger.info(f"Offline mode: generated stub tests for '{state['module_location']}'.")
+    else:
+        # FIX M1: Get LLM only when actually needed (not in offline mode)
+        llm = get_llm(role="tester", config_path=config_path)
+        try:
+            chain = prompt | llm
+            response = invoke_with_retry(chain, invoke_params)
+            func_logger.debug(f"Tester Response:\n{response.content}")
+            response_content = strip_markdown_code(response.content)
+        except Exception as e:
+            func_logger.warning(
+                f"LLM API call failed for tests '{state['module_location']}': "
+                f"{e}. Generating stub tests."
+            )
+            module_name = Path(state["module_location"]).stem
+            response_content = (
+                f"import pytest\n\n\n"
+                f"class Test{module_name.replace('_', ' ').title().replace(' ', '')}:\n"
+                f'    """Test {module_name}."""\n'
+                f"\n"
+                f"    def test_{module_name}_main(self):\n"
+                f'        """Test {module_name}_main."""\n'
+                f"        # TODO: Implement test for {module_name}_main\n"
+                f"        pass\n"
+            )
+            state.setdefault("last_error", str(e))
 
     return {
         "tests": response_content + "\n",

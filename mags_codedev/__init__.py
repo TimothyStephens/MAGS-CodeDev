@@ -1,7 +1,3 @@
-"""
-MAGs-CodeDev: Multi-Agent Graph System for Code Development.
-"""
+"""MAGs-CodeDev: Automated multi-agent coding, testing, review loop."""
 
-from mags_codedev.cli import app
-
-__all__ = ["app"]
+__version__ = "0.1.0"

@@ -11,12 +11,17 @@ try:
 except ImportError:
     ChatMistralAI = None
 try:
+    from langchain_ollama import ChatOllama
+except ImportError:
+    ChatOllama = None
+try:
     from langchain_cohere import ChatCohere
 except ImportError:
     ChatCohere = None
 
 from mags_codedev.utils.db import TokenLoggingCallbackHandler
 from mags_codedev.utils.logger import logger
+
 
 def ensure_config_structure(config: dict) -> dict:
     """Ensures the config dictionary has the modern structure, migrating if necessary."""
@@ -54,6 +59,78 @@ def ensure_config_structure(config: dict) -> dict:
     config["models"] = new_models
     return config
 
+
+def _resolve_env_api_keys(config: dict) -> None:
+    """Resolve API keys from environment variables. Env vars take highest priority."""
+    api_keys = config.setdefault("api_keys", {})
+    env_map = {
+        "OPENAI_API_KEY": "openai",
+        "ANTHROPIC_API_KEY": "anthropic",
+        "GOOGLE_API_KEY": "gemini",
+        "MISTRAL_API_KEY": "mistral",
+        "COHERE_API_KEY": "cohere",
+        "OLLAMA_API_KEY": "ollama",
+    }
+    for env_var, key_name in env_map.items():
+        val = os.environ.get(env_var)
+        if val:
+            api_keys[key_name] = val
+
+def _resolve_env_models(config: dict) -> None:
+    """Resolve models from environment variables.
+    
+    Global override: MAGS_MODEL, MAGS_PROVIDER, MAGS_BASE_URL
+    Role-specific override: MAGS_MODEL_<ROLE> (e.g., MAGS_MODEL_CODER)
+    """
+    models_config = config.get("models", {})
+    build_config = models_config.get("build_workflow", {})
+    interactive_config = models_config.get("interactive_commands", {})
+
+    # Global model override
+    global_model = os.environ.get("MAGS_MODEL")
+    global_provider = os.environ.get("MAGS_PROVIDER")
+    global_base_url = os.environ.get("MAGS_BASE_URL")
+
+    # Apply global override to all roles
+    if global_model or global_provider:
+        global_overrides = {}
+        if global_model:
+            global_overrides["model"] = global_model
+        if global_provider:
+            global_overrides["provider"] = global_provider
+        if global_base_url:
+            global_overrides["base_url"] = global_base_url
+
+        # Override build_workflow roles
+        for role_key in ("coder", "tester", "log_checker"):
+            role_config = build_config.get(role_key, {})
+            role_config.update(global_overrides)
+            build_config[role_key] = role_config
+
+        # Override reviewers
+        reviewers = build_config.get("reviewers", [])
+        if reviewers:
+            for r in reviewers:
+                r.update(global_overrides)
+
+        # Override interactive chat
+        chat_config = interactive_config.get("chat", {})
+        chat_config.update(global_overrides)
+        interactive_config["chat"] = chat_config
+
+    # Role-specific overrides (higher priority than global)
+    role_prefix = "MAGS_MODEL_"
+    for env_key, env_val in os.environ.items():
+        if env_key.startswith(role_prefix):
+            role = env_key[len(role_prefix):].lower()
+            role_config = build_config.get(role, {})
+            if not role_config:
+                role_config = interactive_config.get(role, {})
+            if env_val:
+                role_config["model"] = env_val
+            build_config[role] = role_config
+
+
 def load_config(config_path: Path = Path("config.yaml")) -> dict:
     """Loads configuration from yaml and overrides with VS Code settings if present."""
     config = {}
@@ -74,55 +151,142 @@ def load_config(config_path: Path = Path("config.yaml")) -> dict:
     if vscode_path.exists():
         try:
             with open(vscode_path, "r") as f:
-                vscode_settings = json.load(f)
-                # Parse "mags.api_keys.openai" -> config['api_keys']['openai']
-                # Parse "mags-codedev.api_keys.openai" -> config['api_keys']['openai']
-                for k, v in vscode_settings.items():
-                    if k.startswith("mags-codedev.") or k.startswith("mags."):
-                        parts = k.split(".")[1:]
-                        d = config
-                        for part in parts[:-1]:
-                            d = d.setdefault(part, {})
-                        d[parts[-1]] = v
+                raw = f.read()
+            import re
+            # Strip // comments (JSONC format)
+            raw = re.sub(r'//.*?$', '', raw, flags=re.MULTILINE)
+            vscode_settings = json.loads(raw)
+            # Parse "mags.api_keys.openai" -> config['api_keys']['openai']
+            # Parse "mags-codedev.api_keys.openai" -> config['api_keys']['openai']
+            for k, v in vscode_settings.items():
+                if k.startswith("mags-codedev.") or k.startswith("mags."):
+                    parts = k.split(".")[1:]
+                    d = config
+                    for part in parts[:-1]:
+                        d = d.setdefault(part, {})
+                    d[parts[-1]] = v
         except Exception as e:
             logger.warning(f"Could not parse VS Code settings override from .vscode/settings.json: {e}")
-            
+
+    # Override with environment variables (highest priority)
+    _resolve_env_api_keys(config)
+    _resolve_env_models(config)
+
     return config
 
-def _create_llm_instance(model_config: dict, api_keys: dict, role: Optional[str] = None):
+
+def get_base_dir(config_path: Path = Path("config.yaml")) -> str:
+    """Returns the base artifact directory from config (default '.mags-codedev')."""
+    config = load_config(config_path)
+    return config.get("settings", {}).get("base_dir", ".mags-codedev")
+
+
+def get_log_level(config_path: Path = Path("config.yaml")) -> str:
+    """Returns the log level from config (default 'info')."""
+    config = load_config(config_path)
+    return config.get("settings", {}).get("log_level", "info")
+
+
+def _create_llm_instance(
+    model_config: dict, api_keys: dict,
+    role: Optional[str] = None,
+    base_dir: str = ".mags-codedev",
+):
     provider = model_config.get("provider", "openai").lower()
     model_name = model_config.get("model", "gpt-4o")
-    
+
     llm = None
     if provider == "openai":
-        llm = ChatOpenAI(api_key=api_keys.get("openai"), model=model_name)
+        llm = ChatOpenAI(
+            api_key=api_keys.get("openai") or os.environ.get("OPENAI_API_KEY"),
+            model=model_name,
+            base_url=model_config.get("base_url") or os.environ.get("OPENAI_BASE_URL"),
+        )
     elif provider == "anthropic":
-        llm = ChatAnthropic(api_key=api_keys.get("anthropic"), model=model_name)
+        llm = ChatAnthropic(
+            api_key=api_keys.get("anthropic") or os.environ.get("ANTHROPIC_API_KEY"),
+            model=model_name,
+            base_url=model_config.get("base_url") or os.environ.get("ANTHROPIC_BASE_URL"),
+        )
     elif provider == "google":
-        llm = ChatGoogleGenerativeAI(google_api_key=api_keys.get("gemini"), model=model_name)
+        llm = ChatGoogleGenerativeAI(
+            google_api_key=api_keys.get("gemini") or os.environ.get("GOOGLE_API_KEY"),
+            model=model_name,
+        )
     elif provider == "mistral":
         if ChatMistralAI is None:
-            raise ImportError("Mistral provider requires 'langchain-mistralai'. Please install it with `pip install langchain-mistralai`.")
-        llm = ChatMistralAI(api_key=api_keys.get("mistral"), model=model_name)
+            raise ImportError(
+                "Mistral provider requires 'langchain-mistralai'. "
+                "Please install it with `pip install langchain-mistralai`."
+            )
+        llm = ChatMistralAI(
+            api_key=api_keys.get("mistral") or os.environ.get("MISTRAL_API_KEY"),
+            model=model_name,
+        )
     elif provider == "cohere":
         if ChatCohere is None:
-            raise ImportError("Cohere provider requires 'langchain-cohere'. Please install it with `pip install langchain-cohere`.")
-        llm = ChatCohere(api_key=api_keys.get("cohere"), model=model_name)
-    elif provider == "custom_openai":
-        # For local models like Ollama, vLLM, LM Studio
+            raise ImportError(
+                "Cohere provider requires 'langchain-cohere'. "
+                "Please install it with `pip install langchain-cohere`."
+            )
+        llm = ChatCohere(
+            api_key=api_keys.get("cohere") or os.environ.get("COHERE_API_KEY"),
+            model=model_name,
+        )
+    elif provider == "ollama":
+        if ChatOllama is None:
+            raise ImportError(
+                "Ollama provider requires 'langchain-ollama'. "
+                "Please install it with `pip install langchain-ollama`."
+            )
+        llm = ChatOllama(
+            model=model_name,
+            base_url=model_config.get(
+                "base_url"
+            ) or os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434",
+            num_ctx=model_config.get("num_ctx", 8192),
+        )
+    elif provider in ("custom_openai", "local"):
+        # For local OpenAI-compatible servers (Ollama, vLLM, LM Studio)
+        base_url = (
+            model_config.get("base_url")
+            or os.environ.get("OPENAI_BASE_URL")
+            or os.environ.get("OLLAMA_BASE_URL")
+        )
+        if not base_url:
+            logger.warning(
+                "Provider '%s' has no base_url configured. "
+                "Set 'base_url' in config or OPENAI_BASE_URL/OLLAMA_BASE_URL env var.",
+                provider,
+            )
+            base_url = "http://localhost:11434/v1"
+            logger.info("Falling back to default: %s", base_url)
+        api_key = (
+            model_config.get("api_key")
+            or api_keys.get("ollama")
+            or api_keys.get("openai")
+            or os.environ.get("OLLAMA_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+            or "dummy"
+        )
         llm = ChatOpenAI(
-            api_key=model_config.get("api_key", "dummy"),
-            base_url=model_config.get("base_url"),
-            model=model_name
+            api_key=api_key,
+            base_url=base_url,
+            model=model_name,
         )
     else:
-        raise ValueError(f"Unsupported provider: {provider}")
-        
+        raise ValueError(
+            f"Unsupported provider: '{provider}'. "
+            f"Supported: openai, anthropic, google, mistral, cohere, "
+            f"ollama, local, custom_openai."
+        )
+
     if role and llm:
         # Attach the token logging callback automatically
-        llm.callbacks = [TokenLoggingCallbackHandler(role=role, model_name=model_name)]
-        
+        llm.callbacks = [TokenLoggingCallbackHandler(role=role, model_name=model_name, base_dir=base_dir)]
+
     return llm
+
 
 def get_llm(role: str, config_path: Path = Path("config.yaml")):
     """Returns the instantiated LangChain model for a specific agent role."""
@@ -140,7 +304,9 @@ def get_llm(role: str, config_path: Path = Path("config.yaml")):
         model_config = {"provider": "openai", "model": "gpt-4o"}
         
     api_keys = config.get("api_keys", {})
-    return _create_llm_instance(model_config, api_keys, role=role)
+    base_dir = config.get("settings", {}).get("base_dir", ".mags-codedev")
+    return _create_llm_instance(model_config, api_keys, role=role, base_dir=base_dir)
+
 
 def get_reviewer_llms(config_path: Path = Path("config.yaml")) -> list:
     """Returns a list of instantiated LangChain models for parallel review."""
@@ -151,5 +317,6 @@ def get_reviewer_llms(config_path: Path = Path("config.yaml")) -> list:
     # For backward compatibility, check new structure first, then old.
     reviewers_config = build_config.get("reviewers", []) or models_config.get("reviewers", [])
     api_keys = config.get("api_keys", {})
+    base_dir = config.get("settings", {}).get("base_dir", ".mags-codedev")
     # We assign a generic role name for reviewers, or we could index them
-    return [_create_llm_instance(r, api_keys, role=f"reviewer_{r.get('model', 'unknown')}") for r in reviewers_config]
+    return [_create_llm_instance(r, api_keys, role=f"reviewer_{r.get('model', 'unknown')}", base_dir=base_dir) for r in reviewers_config]

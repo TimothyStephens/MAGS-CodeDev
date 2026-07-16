@@ -2,118 +2,172 @@ from langgraph.constants import END, START
 from langgraph.graph import StateGraph
 from mags_codedev.state import ModuleState
 
-# Import placeholder agent and utility nodes.
 from mags_codedev.agents.coder import coder_node
 from mags_codedev.agents.tester import tester_node
 from mags_codedev.utils.docker_ops import test_node, linter_node
 from mags_codedev.agents.log_checker import log_checker_node
 from mags_codedev.agents.reviewer import multi_llm_review_node
 
+import hashlib
+
+
+# ---- Module-level edge functions (extracted for testability — FIX Bug #4) ----
+
+def evaluate_test_results(state: ModuleState) -> str:
+    """Check if tests passed, failed, or max iterations reached."""
+    max_iters = state.get("max_test_fix_iterations", 5)
+    if max_iters > 0 and state["iteration_count"] >= max_iters:
+        return "max_iterations_reached"
+
+    backend = state.get("backend")
+    failure_keywords = (
+        backend.test_success_keywords() if backend
+        else ["FAILED", "ERROR"]
+    )
+    test_upper = state.get("test_results", "").upper()
+    if any(kw in test_upper for kw in failure_keywords):
+        return "tests_failed"
+    return "tests_passed"
+
+
+def evaluate_logs(state: ModuleState) -> str:
+    """Check if log checker found issues, and route accordingly.
+
+    FIX Bug #3: Uses test_error_summary (scoped), returns 'clean' when
+    no actionable errors found (clearing stale feedback).
+    """
+    max_iters = state.get("max_test_fix_iterations", 5)
+    if max_iters > 0 and state["iteration_count"] >= max_iters:
+        return "max_iterations_reached"
+
+    # Use test_error_summary instead of error_summary (scoped tracking)
+    error_summary = state.get("test_error_summary", "")
+    if error_summary:
+        if "no clear issues" in error_summary.lower():
+            return "clean"
+        if "linter" in error_summary.lower() and "test" not in error_summary.lower():
+            return "clean"
+        if state.get("error_location") == "TEST_CODE":
+            return "fix_tests"
+        return "fix_source"
+    return "clean"
+
+
+def evaluate_reviews(state: ModuleState) -> str:
+    """Check if review found issues, and route accordingly."""
+    max_rounds = state.get("max_review_rounds", 3)
+    if max_rounds > 0 and state.get("review_round_count", 0) >= max_rounds:
+        return "max_review_rounds_reached"
+
+    if state.get("review_comments") and len(state["review_comments"]) > 0:
+        return "revise"
+    return "approved"
+
+
+def check_convergence(state: ModuleState) -> dict:
+    """Node: Check if code/tests have converged (identical to previous iteration).
+    
+    If code hash matches previous_code_hash for 2+ consecutive iterations, mark as failed.
+    Same check for test hash. Otherwise, update hashes for next comparison.
+    """
+    code = state.get("code", "")
+    tests = state.get("tests", "")
+    current_code_hash = hashlib.sha256(code.encode()).hexdigest() if code else ""
+    current_test_hash = hashlib.sha256(tests.encode()).hexdigest() if tests else ""
+
+    previous_code_hash = state.get("previous_code_hash")
+    previous_test_hash = state.get("previous_test_hash")
+
+    # FIX M3: Check both code and test convergence
+    if previous_code_hash and current_code_hash and current_code_hash == previous_code_hash:
+        return {
+            "status": "failed",
+            "test_error_summary": "Coder convergence failed: code unchanged from previous iteration.",
+        }
+    if previous_test_hash and current_test_hash and current_test_hash == previous_test_hash:
+        return {
+            "status": "failed",
+            "test_error_summary": "Tester convergence failed: tests unchanged from previous iteration.",
+        }
+
+    # Update hash tracking for next cycle
+    return {
+        "previous_code_hash": current_code_hash,
+        "previous_test_hash": current_test_hash,
+    }
+
+
+# ---- Graph construction ----
 
 def build_function_graph():
-    """
-    Constructs the LangGraph state machine for processing a single module.
-    This graph will be executed in parallel for multiple modules.
-    """
+    """Build the LangGraph state machine for module generation."""
     workflow = StateGraph(ModuleState)
 
-    # ---------------------------------------------------------
-    # 1. Define Nodes (Agents and Tools)
-    # ---------------------------------------------------------
+    # Define Nodes
     workflow.add_node("coder", coder_node)
     workflow.add_node("tester", tester_node)
     workflow.add_node("run_tests", test_node)
     workflow.add_node("run_linters", linter_node)
     workflow.add_node("log_checker", log_checker_node)
     workflow.add_node("multi_llm_review", multi_llm_review_node)
+    workflow.add_node("check_convergence", check_convergence)
 
-    # ---------------------------------------------------------
-    # 2. Define Standard Edges (Linear Flow)
-    # ---------------------------------------------------------
+    # Entry point and linear edges
     workflow.set_entry_point("coder")
     workflow.add_edge("coder", "tester")
     workflow.add_edge("tester", "run_tests")
 
-    # ---------------------------------------------------------
-    # 3. Define Conditional Edges (Decision Logic)
-    # ---------------------------------------------------------
-
-    # A. Evaluate Docker Test Results
-    def evaluate_test_results(state: ModuleState) -> str:
-        max_iters = state.get("max_iterations", 5)
-        if max_iters > 0 and state["iteration_count"] >= max_iters:
-            return "max_iterations_reached"
-
-        # Use the backend to determine test failure keywords.
-        backend = state.get("backend")
-        failure_keywords = (
-            backend.test_success_keywords() if backend
-            else ["FAILED", "ERROR"]  # fallback
-        )
-        test_upper = state["test_results"].upper()
-        if any(kw in test_upper for kw in failure_keywords):
-            return "tests_failed"
-        return "tests_passed"
-
+    # A. Test result evaluation
     workflow.add_conditional_edges(
         "run_tests",
         evaluate_test_results,
         {
             "tests_passed": "run_linters",
             "tests_failed": "log_checker",
-            "max_iterations_reached": END
+            "max_iterations_reached": END,
         }
     )
 
-    # Linters feed directly into the log checker to assess warnings/errors
+    # Linters feed into log_checker
     workflow.add_edge("run_linters", "log_checker")
 
-    # B. Evaluate Logs (Diagnostic Phase)
-    def evaluate_logs(state: ModuleState) -> str:
-        max_iters = state.get("max_iterations", 5)
-        if max_iters > 0 and state["iteration_count"] >= max_iters:
-            return "max_iterations_reached"
-
-        # If the log checker populates an error_summary, route to the correct fixer
-        if state.get("error_summary"):
-            if state.get("error_location") == "TEST_CODE":
-                return "fix_tests"
-            return "fix_source"  # Default to fixing source
-        return "clean"
-
+    # B. Log evaluation
     workflow.add_conditional_edges(
         "log_checker",
         evaluate_logs,
         {
-            "clean": "multi_llm_review",
+            "clean": "check_convergence",
             "fix_source": "coder",
             "fix_tests": "tester",
-            "max_iterations_reached": END
+            "max_iterations_reached": END,
         }
     )
 
-    # C. Multi-LLM Review Phase
-    def evaluate_reviews(state: ModuleState) -> str:
-        max_iters = state.get("max_iterations", 5)
-        if max_iters > 0 and state["iteration_count"] >= max_iters:
-            return "max_iterations_reached"
+    # C. Convergence check → review or fail
+    # FIX M4: Return string key instead of END sentinel for reliable matching
+    def check_convergence_route(state: ModuleState) -> str:
+        if state.get("status") == "failed":
+            return "__end__"
+        return "multi_llm_review"
 
-        # If reviewers aggregated actionable comments, send back to Coder to revise
-        if state.get("review_comments") and len(state["review_comments"]) > 0:
-            return "revise"
+    workflow.add_conditional_edges(
+        "check_convergence",
+        check_convergence_route,
+        {
+            "__end__": END,
+            "multi_llm_review": "multi_llm_review",
+        }
+    )
 
-        # If the list is empty, all reviewers approved
-        return "approved"
-
+    # D. Review evaluation
     workflow.add_conditional_edges(
         "multi_llm_review",
         evaluate_reviews,
         {
             "approved": END,
             "revise": "coder",
-            "max_iterations_reached": END
+            "max_review_rounds_reached": END,
         }
     )
 
-    # Compile the graph into a runnable LangChain executable
     return workflow.compile()

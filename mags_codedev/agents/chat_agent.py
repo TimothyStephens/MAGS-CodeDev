@@ -41,35 +41,62 @@ def write_file(filepath: str, content: str) -> str:
         return f"Successfully wrote to {filepath}"
     except Exception as e:
         return f"Error writing file: {e}"
-
-def start_chat_repl(config_path: Path, system_message_override: str = None, command_name: str = "chat"):
+def start_chat_repl(
+    config_path: Path,
+    system_message_override: str = None,
+    command_name: str = "chat",
+    offline: bool = False,
+):
     """Initializes and returns the Chat Agent graph for the CLI."""
-    config = load_config(config_path)
-    llm = get_llm(role="chat", config_path=config_path)
-    
+    _ = load_config(config_path)
+
+    if offline:
+        from langchain_core.language_models import FakeListChatModel
+        llm = FakeListChatModel(
+            responses=[
+                "Offline mode. I cannot process LLM requests. "
+                "Use --no-offline or set API keys for full functionality."
+            ],
+        )
+    else:
+        llm = get_llm(role="chat", config_path=config_path)
+
     # Clear any default callbacks attached by get_llm to avoid duplication.
     # The specific TokenLoggingCallbackHandler is passed via config in cli.py.
     llm.callbacks = []
 
     tools = [read_file, write_file]
-    
-    default_system_message = "You are the MAGs-CodeDev interactive assistant. You help the user debug and refine their project. You can read and write files directly."
-    
+
+    default_system_message = (
+        "You are the MAGs-CodeDev interactive assistant. "
+        "You help the user debug and refine their project. "
+        "You can read and write files directly."
+    )
+
     system_message = system_message_override or default_system_message
-    
-    # MemorySaver replaces ConversationBufferMemory for persisting state between turns
+
+    # MemorySaver replaces ConversationBufferMemory for persisting state
     memory = MemorySaver()
-    
+
     # create_react_agent builds a StateGraph pre-configured for tool calling
     try:
-        return create_react_agent(llm, tools, state_modifier=system_message, checkpointer=memory)
+        return create_react_agent(
+            llm, tools, state_modifier=system_message, checkpointer=memory,
+        )
     except TypeError as e:
         # Fallback chain for different versions of langgraph
         if "state_modifier" in str(e):
             try:
-                return create_react_agent(llm, tools, messages_modifier=system_message, checkpointer=memory)
+                return create_react_agent(
+                    llm, tools,
+                    messages_modifier=system_message, checkpointer=memory,
+                )
             except TypeError as e2:
                 if "messages_modifier" in str(e2):
-                    return create_react_agent(llm, tools, prompt=SystemMessage(content=system_message), checkpointer=memory)
+                    return create_react_agent(
+                        llm, tools,
+                        prompt=SystemMessage(content=system_message),
+                        checkpointer=memory,
+                    )
                 raise e2
         raise e

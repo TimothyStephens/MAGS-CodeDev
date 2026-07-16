@@ -17,10 +17,8 @@ def validate_git_repo():
     """Ensures the current directory is a valid git repo with a main/master branch."""
     try:
         repo = git.Repo(os.getcwd())
-        if repo.bare:
-            raise RuntimeError("Cannot run in a bare git repository.")
-        # Check if 'main' exists (or master, though we default to main)
-        if "main" not in repo.heads and "master" not in repo.heads:
+        base_branch = _get_base_branch(repo)
+        if base_branch not in repo.heads:
             raise RuntimeError("Git repository must have a 'main' or 'master' branch.")
     except git.InvalidGitRepositoryError:
         raise RuntimeError("Current directory is not a git repository. Run `git init` first.")
@@ -28,25 +26,24 @@ def validate_git_repo():
         raise RuntimeError(f"Git validation failed: {e}")
 
 
-def create_parallel_worktree(branch_name: str, force_fresh: bool = False) -> str:
-    """Creates a new git branch and checks it out in an isolated worktree directory."""
-    # Validation is now handled by the caller (cli.py) via validate_git_repo()
-
-    # Sanitize branch name for directory usage to avoid nested paths (e.g. feature/foo -> feature_foo)
+def create_parallel_worktree(branch_name: str, base_dir: str = ".mags-codedev", force_fresh: bool = False) -> str:
+    """Creates a new git branch and checks it out in an isolated worktree directory.
+    
+    Worktrees are stored under <base_dir>/worktrees/feature-<branch_name>.
+    """
     safe_dir_name = branch_name.replace("/", "_")
-    worktree_path = os.path.abspath(f".worktree_{safe_dir_name}")
+    worktrees_dir = os.path.join(base_dir, "worktrees")
+    os.makedirs(worktrees_dir, exist_ok=True)
+    worktree_path = os.path.abspath(os.path.join(worktrees_dir, f"feature-{safe_dir_name}"))
 
     repo = git.Repo(os.getcwd())
 
-    # If forcing a fresh start, remove existing worktree and branch
     if force_fresh:
         if os.path.exists(worktree_path):
-            # This command tells git to forget about the worktree and removes the directory
-            subprocess.run(["git", "worktree", "remove", "--force", worktree_path], check=False, capture_output=True)
-        if branch_name in repo.heads:
-            repo.delete_head(branch_name, force=True)
-        # Failsafe cleanup if worktree remove didn't clear the directory
-        if os.path.exists(worktree_path):
+            subprocess.run(
+                ["git", "worktree", "remove", worktree_path, "--force"],
+                check=False, capture_output=True,
+            )
             shutil.rmtree(worktree_path)
 
     # 1. Reuse existing worktree if available (Iteration Mode)
@@ -57,22 +54,24 @@ def create_parallel_worktree(branch_name: str, force_fresh: bool = False) -> str
     if branch_name in repo.heads:
         subprocess.run(["git", "worktree", "prune"], check=False, capture_output=True)
         try:
-            subprocess.run(["git", "worktree", "add", worktree_path, branch_name], check=True, capture_output=True)
-            return worktree_path
+            result = subprocess.run(
+                ["git", "worktree", "add", worktree_path, branch_name],
+                check=True, capture_output=True,
+            )
+            if result.returncode == 0:
+                return worktree_path
         except subprocess.CalledProcessError:
-            # If we can't checkout (e.g. branch is checked out elsewhere), force delete and start fresh
+            # Branch exists but worktree creation failed — delete branch
             repo.delete_head(branch_name, force=True)
 
     # 3. Create Fresh Worktree
-
-    # Prune git worktree metadata to ensure we can create a new one
     subprocess.run(["git", "worktree", "prune"], check=False, capture_output=True)
 
-    # Create branch and worktree
+    base_branch = _get_base_branch(repo)
     try:
         subprocess.run(
-            ["git", "worktree", "add", "-b", branch_name, worktree_path, _get_base_branch(repo)],
-            check=True, capture_output=True
+            ["git", "worktree", "add", "-b", branch_name, worktree_path, base_branch],
+            check=True, capture_output=True,
         )
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr.decode("utf-8", errors="replace").strip() if e.stderr else "Unknown git error"
@@ -80,42 +79,118 @@ def create_parallel_worktree(branch_name: str, force_fresh: bool = False) -> str
     return worktree_path
 
 
-def merge_and_cleanup_worktree(branch_name: str, worktree_path: str, success: bool) -> bool:
-    """Merges the branch to main if successful. Preserves branch on merge conflict. Returns True if merge was successful."""
-    merge_success = False
+def merge_and_cleanup_worktree(branch_name: str, worktree_path: str, success: bool, base_dir: str = ".mags-codedev") -> bool:
+    """Merges the branch to main if successful. Preserves branch on merge conflict.
+    
+    On merge failure, backs up the worktree to <base_dir>/merges/ before cleanup.
+    Returns True if merge succeeded, False otherwise.
+    """
+    repo = git.Repo(os.getcwd())
+    merge_success = True
 
-    if success:
-        try:
-            repo = git.Repo(os.getcwd())
-            base_branch = _get_base_branch(repo)
+    try:
+        base_branch = _get_base_branch(repo)
 
-            # Checkout main and merge
-            # We use check=True to catch merge conflicts
-            subprocess.run(["git", "checkout", base_branch], check=True, capture_output=True)
+        if success:
+            repo.git.checkout(base_branch)
+            merge_result = subprocess.run(
+                ["git", "merge", branch_name, "--no-edit"],
+                capture_output=True, text=True
+            )
+
+            if merge_result.returncode != 0:
+                # Merge conflict — abort and preserve branch
+                repo.git.merge("--abort")
+                merge_success = False
+                # Backup worktree on merge failure before cleanup
+                _backup_worktree(worktree_path, branch_name, base_dir)
+            else:
+                # Merge successful — delete branch and worktree
+                subprocess.run(
+                    ["git", "worktree", "remove", worktree_path, "--force"],
+                    check=False, capture_output=True,
+                )
+                repo.delete_head(branch_name)
+        else:
+            # Build failed — remove branch and worktree
             subprocess.run(
-                ["git", "merge", "--no-ff", "-m", f"feat: Merge module '{branch_name}'", branch_name],
-                check=True, capture_output=True
+                ["git", "worktree", "remove", worktree_path, "--force"],
+                check=False, capture_output=True,
             )
-            merge_success = True
-        except subprocess.CalledProcessError as e:
-            cmd = " ".join(e.cmd) if isinstance(e.cmd, list) else e.cmd
-            print(
-                f"\n[!] Git operation failed during merge phase for {branch_name}."
-                f"\n    Command: {cmd}"
-                f"\n    Error: {e.stderr.decode('utf-8', errors='replace').strip() if e.stderr else 'Unknown'}"
-            )
-
-    # Cleanup logic:
-    if merge_success:
-        # 1. Remove the worktree directory
-        subprocess.run(["git", "worktree", "remove", "--force", worktree_path], check=False)
-        # 2. Delete the branch reference
-        subprocess.run(["git", "branch", "-D", branch_name], check=False, capture_output=True)
-        # 3. Failsafe cleanup if worktree remove didn't clear the directory
-        if os.path.exists(worktree_path):
-            shutil.rmtree(worktree_path)
-    else:
-        # If failed or conflict, we keep the worktree and branch for inspection.
-        pass
+            if branch_name in repo.heads:
+                repo.delete_head(branch_name, force=True)
+    except Exception as e:
+        merge_success = False
 
     return merge_success
+
+
+def _backup_worktree(worktree_path: str, branch_name: str, base_dir: str) -> None:
+    """Backup a worktree to <base_dir>/merges/ on merge failure."""
+    import tarfile
+    import logging
+    from datetime import datetime
+    
+    logger = logging.getLogger("mags_codedev")
+    merges_dir = os.path.join(base_dir, "merges")
+    os.makedirs(merges_dir, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_name = branch_name.replace("/", "_")
+    backup_path = os.path.join(merges_dir, f"{timestamp}_{safe_name}")
+    
+    try:
+        with tarfile.open(f"{backup_path}.tar.gz", "w:gz") as tar:
+            tar.add(worktree_path, arcname=safe_name)
+        logger.info(f"Worktree backed up to {backup_path}.tar.gz")
+    except Exception as e1:
+        try:
+            shutil.copytree(worktree_path, f"{backup_path}_copy")
+            logger.info(f"Worktree backed up (copy) to {backup_path}_copy")
+        except Exception as e2:
+            logger.error(
+                f"Failed to backup worktree for branch '{branch_name}': "
+                f"tar failed ({e1}), copy failed ({e2})"
+            )
+
+
+def clone_or_pull_repo(repo_url: str, branch: str = "main", target_dir: str = None) -> str:
+    """Clones or pulls a git repository. Returns the path to the repo."""
+    if target_dir is None:
+        target_dir = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
+
+    if os.path.exists(target_dir):
+        # Pull latest
+        repo = git.Repo(target_dir)
+        repo.git.checkout(branch)
+        repo.git.pull("origin", branch)
+    else:
+        git.Repo.clone_from(repo_url, target_dir, branch=branch)
+
+    return target_dir
+
+
+def checkout_branch(repo: git.Repo, branch_name: str, create: bool = False):
+    """Checks out a branch, creating it if requested."""
+    if create and branch_name not in repo.heads:
+        repo.create_head(branch_name)
+    repo.git.checkout(branch_name)
+
+
+def create_branch(repo: git.Repo, branch_name: str, source: str = None):
+    """Creates a new branch from the specified source (or HEAD)."""
+    if source:
+        repo.create_head(branch_name, source)
+    else:
+        repo.create_head(branch_name)
+
+
+def ensure_git_repo() -> None:
+    """Initialize a git repo if one doesn't exist. Creates 'main' branch."""
+    if os.path.isdir(".git"):
+        return
+
+    repo = git.Repo.init()
+    # Create an empty initial commit on 'main' branch
+    repo.git.checkout("-b", "main")
+    repo.git.commit("--allow-empty", "-m", "Initial commit")

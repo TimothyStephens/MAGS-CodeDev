@@ -1,0 +1,83 @@
+[
+  {
+    "location": "src/pipe/core/types.py",
+    "description": "Core data types and dataclasses for the StreamPipe pipeline system. Define Record (the unit of data flowing through the pipeline) with fields: id (UUID), payload (dict), metadata (dict with timestamp, source, tags), and status (enum: PENDING, PROCESSING, COMPLETED, FAILED). Define PipelineConfig dataclass with fields: name, max_retries, batch_size, timeout_seconds, and enabled flag. Define TransformerSpec with name, module_path, and config dict. All types should use typing.TypeVar for generics where appropriate.",
+    "dependencies": []
+  },
+  {
+    "location": "src/pipe/core/constants.py",
+    "description": "System-wide constants for StreamPipe. Define default values: DEFAULT_MAX_RETRIES (3), DEFAULT_BATCH_SIZE (100), DEFAULT_TIMEOUT (30), MAX_RECORD_SIZE_BYTES (10_000_000), and status label mappings. Define supported source types list (FILE, HTTP, KAFKA, WEBSOCKET) and sink types list (FILE, HTTP, DATABASE, KAFKA). Define well-known metadata keys as string constants.",
+    "dependencies": []
+  },
+  {
+    "location": "src/pipe/core/config.py",
+    "description": "Configuration loading and management for StreamPipe. Implement a PipelineLoader class that reads YAML config files and returns PipelineConfig objects from types.py. Support environment variable overrides using the PIPES_ prefix (e.g., PIPES_MAX_RETRIES). Implement config validation: raise ValueError for invalid values. Provide a get_default_config() function returning a PipelineConfig with all defaults from constants.py. The config loader should handle missing optional fields gracefully.",
+    "dependencies": ["src/pipe/core/types.py", "src/pipe/core/constants.py"]
+  },
+  {
+    "location": "src/pipe/validation/validator.py",
+    "description": "Record and config validation module. Implement validate_record(record: Record) -> List[str] that checks: id is valid UUID, payload is non-empty dict, timestamp in metadata is ISO format, status is valid enum value. Implement validate_config(config: PipelineConfig) -> List[str] that checks: name is non-empty string, max_retries >= 0, batch_size > 0, timeout_seconds > 0. Implement a Validator class with a validate_all(records) method that validates a batch and raises ValidationError with all messages aggregated. Import Record and PipelineConfig from core/types.py.",
+    "dependencies": ["src/pipe/core/types.py"]
+  },
+  {
+    "location": "src/pipe/serialization/json.py",
+    "description": "JSON serialization for Record and PipelineConfig. Implement record_to_json(record) -> str and json_to_record(json_str) -> Record with proper datetime handling (isoformat parse/dump). Implement config_to_json(config) -> str and json_to_config(json_str) -> PipelineConfig. Implement a JSONSerializer class with serialize(obj) and deserialize(json_str, target_type) methods. Handle nested dicts in payload. Import types from core/types.py. All serialization should be round-trip safe.",
+    "dependencies": ["src/pipe/core/types.py"]
+  },
+  {
+    "location": "src/pipe/logging/pipeline_logger.py",
+    "description": "Structured logging for pipeline execution. Implement PipelineLogger class with methods: info(msg, record_id=None, stage=None), error(msg, record_id=None, exc_info=None), and metric(name, value, tags=None). Log entries should include timestamp, level, module, record_id, and stage. Implement a log_to_file(filepath) context manager that writes all logs to a JSONL file. Support log levels from the logging module. Import constants for well-known metadata keys.",
+    "dependencies": ["src/pipe/core/constants.py"]
+  },
+  {
+    "location": "src/pipe/transformers/base.py",
+    "description": "Base transformer class and registry for StreamPipe. Implement abstract BaseTransformer with methods: transform(record: Record) -> Record, transform_batch(records: List[Record]) -> List[Record], and validate_input(record) -> bool. Implement TransformerRegistry class with register(name, transformer_cls), get(name), and list_all() methods. The registry should load transformer classes from TransformerSpec. Implement a PipelineStep dataclass (name, transformer, order) for ordering transforms. Import types from core/types.py and validator from validation/validator.py.",
+    "dependencies": ["src/pipe/core/types.py", "src/pipe/validation/validator.py"]
+  },
+  {
+    "location": "src/pipe/transformers/builtins.py",
+    "description": "Built-in transformer implementations. Implement FilterTransformer (filters records by predicate function), FieldMapperTransformer (renames/adds/removes fields in payload), EnrichmentTransformer (adds computed fields to payload based on existing fields), and BatchAggregator (combines multiple records into a single aggregated record). Each transformer must extend BaseTransformer from base.py and be auto-registerable. Include input validation using the validator module. Import types from core/types.py.",
+    "dependencies": ["src/pipe/transformers/base.py", "src/pipe/core/types.py"]
+  },
+  {
+    "location": "src/pipe/sources/file_source.py",
+    "description": "File-based data source for StreamPipe. Implement FileSource class that reads records from JSON files (one JSON object per line, or JSON array). Methods: __init__(filepath, batch_size), read() -> List[Record] (reads next batch), reset() (rewind to start), and total_records() -> int. Support gzip compressed files (.gz extension). Each line/object should be parsed into a Record with generated UUID and timestamp. Implement validation using validator module. Import types from core/types.py and constants for file handling.",
+    "dependencies": ["src/pipe/core/types.py", "src/pipe/validation/validator.py", "src/pipe/core/constants.py"]
+  },
+  {
+    "location": "src/pipe/sinks/file_sink.py",
+    "description": "File-based data sink for StreamPipe. Implement FileSink class that writes records to JSON files. Methods: __init__(filepath, append=False, compress=False), write(records: List[Record]) -> int (returns count written), flush(), and close(). Support gzip compression when compress=True. When append=True, open file in append mode. Implement a context manager interface (__enter__/__exit__). Include error handling for disk full and permission errors. Import types from core/types.py.",
+    "dependencies": ["src/pipe/core/types.py"]
+  },
+  {
+    "location": "src/pipe/engine/pipeline.py",
+    "description": "Core pipeline execution engine. Implement Pipeline class with methods: __init__(config: PipelineConfig), add_transformer(transformer: BaseTransformer), add_source(source), add_sink(sink), run() -> PipelineResult, and run_async() -> Coroutine. The run method should: read records from source in batches, pass through each transformer in order, validate between stages, write to sink, track metrics (records processed, failed, latency). Implement PipelineResult dataclass with total_processed, total_failed, duration_seconds, and errors list. Use PipelineLogger for structured logging. Handle retries based on config.max_retries. Import all relevant modules.",
+    "dependencies": [
+      "src/pipe/core/types.py",
+      "src/pipe/core/config.py",
+      "src/pipe/validation/validator.py",
+      "src/pipe/transformers/base.py",
+      "src/pipe/logging/pipeline_logger.py"
+    ]
+  },
+  {
+    "location": "src/pipe/engine/scheduler.py",
+    "description": "Pipeline scheduling and orchestration. Implement PipelineScheduler class that manages multiple Pipeline instances. Methods: add_pipeline(pipeline: Pipeline, schedule: str) where schedule is a cron-like expression (support simple patterns: every N seconds, at specific times), start(), stop(), and status() -> dict. Implement a simple internal scheduler using threading.Timer for periodic execution. Track active pipelines and their last run times. Use PipelineLogger for logging. Import Pipeline from engine/pipeline.py and types from core/types.py.",
+    "dependencies": [
+      "src/pipe/engine/pipeline.py",
+      "src/pipe/core/types.py",
+      "src/pipe/logging/pipeline_logger.py"
+    ]
+  },
+  {
+    "location": "src/pipe/cli/main.py",
+    "description": "CLI entry point for StreamPipe using argparse. Implement commands: 'run' (run a pipeline from config file), 'list-transformers' (list all registered transformers), 'validate-config' (validate a config file), and 'info' (show pipeline info). The 'run' command should load config from file, build the pipeline, add configured transformers/sources/sinks, execute, and print results. Use the PipelineScheduler for scheduled runs. Handle errors gracefully with exit codes. Import Pipeline from engine/pipeline.py, PipelineScheduler from engine/scheduler.py, config from core/config.py, and logging from pipeline_logger.",
+    "dependencies": [
+      "src/pipe/engine/pipeline.py",
+      "src/pipe/engine/scheduler.py",
+      "src/pipe/core/config.py",
+      "src/pipe/logging/pipeline_logger.py",
+      "src/pipe/transformers/base.py"
+    ]
+  }
+]

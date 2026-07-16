@@ -214,3 +214,10 @@ mags_cache.db
 config.yaml
 # Local Pi runtime state
 .atl/
+
+# MAGS-CodeDev
+.MAGS-CodeDev/
+config.yaml
+.worktree_*/
+Dockerfile.mags-codedev
+*.sif.def
