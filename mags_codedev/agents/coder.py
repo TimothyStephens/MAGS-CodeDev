@@ -5,13 +5,15 @@ from langchain_core.prompts import ChatPromptTemplate
 from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import get_llm
 from mags_codedev.utils.retry import invoke_with_retry
-from mags_codedev.utils.llm_helpers import resolve_logger, strip_markdown_code
+from mags_codedev.utils.llm_helpers import resolve_logger, resolve_response_logger, strip_markdown_code
 
 
 def coder_node(state: ModuleState) -> dict:
     """Generates or updates the code based on specifications and feedback."""
     config_path = state["config_path"]
     func_logger = resolve_logger(state.get("log_filepath"))
+    resp_logger = resolve_response_logger(state.get("log_filepath"))
+    session = state.get("_session_number", 1)
     backend = state.get("backend")
 
     # Determine context based on whether this is a first run or a fix
@@ -81,7 +83,7 @@ def coder_node(state: ModuleState) -> dict:
     if dep_code:
         dep_parts = []
         for loc, source in dep_code.items():
-            dep_parts.append(f"--- File: {loc} ---\n```python\n{source}\n```")
+            dep_parts.append(f"--- File: {loc} ---\n```python\n{source.replace('{', '{{').replace('}', '}}')}\n```")
         dependency_context = (
             "DEPENDENCY CONTEXT\n"
             "These are the source files this module depends on.\n"
@@ -102,9 +104,13 @@ def coder_node(state: ModuleState) -> dict:
         ("human", human_template)
     ])
 
+    iteration = state.get("iteration_count", 0) + 1
+
     func_logger.info(
-        f"Coder: Sending prompt for '{state['module_location']}' "
-        f"(iteration {state.get('iteration_count', 0) + 1})."
+        "[Session %d, Iteration %d] Coder: sending prompt for '%s'.",
+        session,
+        iteration,
+        state["module_location"],
     )
     func_logger.debug(
         "Coder Prompt:\n%s",
@@ -146,6 +152,27 @@ def coder_node(state: ModuleState) -> dict:
                 "feedback": feedback
             })
             func_logger.debug(f"Coder Response:\n{response.content}")
+
+            # INFO: log response summary (first line / key detail)
+            first_line = response.content.strip().split("\n")[0]
+            func_logger.info(
+                "[Session %d, Iteration %d] Coder: received response (%s).",
+                session,
+                iteration,
+                first_line[:100] if len(first_line) > 100 else first_line,
+            )
+
+            # TRACE: log token usage if available
+            if hasattr(response, "usage_metadata"):
+                meta = response.usage_metadata
+                func_logger.trace(
+                    "[Session %d, Iteration %d] Coder tokens: input=%s, output=%s",
+                    session,
+                    iteration,
+                    meta.get("input_tokens", "?"),
+                    meta.get("output_tokens", "?"),
+                )
+
             response_content = strip_markdown_code(response.content)
         except Exception as e:
             func_logger.warning(
@@ -164,6 +191,8 @@ def coder_node(state: ModuleState) -> dict:
                 f"    {module_name}_main()\n"
             )
             state.setdefault("last_error", str(e))
+
+    resp_logger.info(f"[Session {session}, Iteration {iteration}] Coder Response:\n{response_content}")
 
     return {
         "code": response_content + "\n",

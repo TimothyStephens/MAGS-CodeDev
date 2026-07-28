@@ -1,11 +1,9 @@
 """ModuleState TypedDict: shared state schema for LangGraph nodes."""
 
-from __future__ import annotations
-from typing import TYPE_CHECKING, TypedDict, List, Dict, Any, Optional
+from typing import TypedDict, List, Dict, Any, Optional
 from pathlib import Path
 
-if TYPE_CHECKING:
-    from mags_codedev.backends.language_backend import LanguageBackend
+from mags_codedev.backends.language_backend import LanguageBackend
 
 
 class ModuleState(TypedDict, total=False):
@@ -44,6 +42,11 @@ class ModuleState(TypedDict, total=False):
     max_review_rounds: int        # Budget for review revision cycles
     review_round_count: int       # Tracks review-specific iterations
     status: str                   # 'in_progress', 'success', 'failed'
+
+    # Session Tracking (lifecycle logging)
+    _previous_iterations: int     # Total iterations from previous build sessions (from DB)
+    _session_number: int          # Which build session this is (1-based, increments on restart)
+    _exit_reason: Optional[str]   # Set by session_end_node: 'SUCCESS', 'MAX_TEST_ITERATIONS', etc.
     # Dependency Context
     dependency_code: Dict[str, str]   # Maps dep location -> source code
     project_instructions: str         # Project-level instructions from AGENT.md

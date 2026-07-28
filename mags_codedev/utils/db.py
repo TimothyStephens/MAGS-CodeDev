@@ -445,6 +445,13 @@ class TokenLoggingCallbackHandler(BaseCallbackHandler):
         in_tokens, out_tokens = _extract_tokens(response)
 
         if in_tokens > 0 or out_tokens > 0:
+            logger.trace(
+                "Token usage — role=%s, model=%s, input=%d, output=%d",
+                self.role,
+                self.model_name,
+                in_tokens,
+                out_tokens,
+            )
             log_token_usage(
                 role=self.role,
                 model=self.model_name,

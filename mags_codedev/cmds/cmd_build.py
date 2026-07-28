@@ -153,6 +153,31 @@ async def process_module(
             max_test_fix_iterations = settings.get("max_test_fix_iterations", 5)
             max_review_rounds = settings.get("max_review_rounds", 3)
 
+            # Load iteration history from DB for continuity
+            previous_iterations = get_total_iterations(module_location, base_dir=base_dir)
+            # Session number: count how many times we've tried this module
+            # We track this via a session counter file
+            session_counter_file = os.path.join(
+                base_dir, "sessions", f"{func_hash}.session"
+            )
+            session_dir = os.path.dirname(session_counter_file)
+            session_number = 1
+            if os.path.exists(session_counter_file):
+                with open(session_counter_file, "r") as f:
+                    try:
+                        session_number = int(f.read().strip()) + 1
+                    except ValueError:
+                        session_number = 1
+            os.makedirs(session_dir, exist_ok=True)
+            with open(session_counter_file, "w") as f:
+                f.write(str(session_number))
+
+            if previous_iterations:
+                func_logger.info(
+                    f"Continuing from {previous_iterations} previous iterations "
+                    f"(session {session_number})"
+                )
+
             # 2. Initialize LangGraph State
             initial_state: ModuleState = {
                 "backend": backend,
@@ -175,8 +200,6 @@ async def process_module(
                 "error_location": None,
 
                 "previous_code_hash": artifact_code_hash,
-                "previous_test_hash": None,
-
                 "iteration_count": 1 if initial_error else 0,
                 "max_test_fix_iterations": max_test_fix_iterations,
                 "max_review_rounds": max_review_rounds,
@@ -184,6 +207,10 @@ async def process_module(
 
                 "base_dir": base_dir,
                 "status": "in_progress",
+
+                # Session tracking (lifecycle logging)
+                "_previous_iterations": previous_iterations or 0,
+                "_session_number": session_number,
             }
 
             # 3. Compile and Run the Graph
@@ -198,9 +225,10 @@ async def process_module(
             async for event in graph.astream(initial_state, config=graph_config):
                 for node_name, state_update in event.items():
                     status_dict[module_location]["step"] = node_name
-                    if "iteration_count" in state_update:
+                    if state_update and "iteration_count" in state_update:
                         status_dict[module_location]["iterations"] = state_update["iteration_count"]
-                    final_state.update(state_update)
+                    if state_update:
+                        final_state.update(state_update)
 
             # Record tokens used
             tokens = token_counter.total

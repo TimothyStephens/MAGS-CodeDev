@@ -6,13 +6,15 @@ import re
 from langchain_core.prompts import ChatPromptTemplate
 from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import get_reviewer_llms
-from mags_codedev.utils.llm_helpers import resolve_logger
+from mags_codedev.utils.llm_helpers import resolve_logger, resolve_response_logger
 
 async def _get_review(llm, state: ModuleState) -> str:
     """Helper function to execute a single review asynchronously with retry logic."""
     model_name = getattr(llm, 'model_name', getattr(llm, 'model', 'unknown'))
 
     func_logger = resolve_logger(state.get("log_filepath"))
+    resp_logger = resolve_response_logger(state.get("log_filepath"))
+    session = state.get("_session_number", 1)
     system_prompt = (
         "You are a strict Code Reviewer.\n"
         "Review this code for: correctness, edge case handling, naming conventions,\n"
@@ -36,7 +38,7 @@ async def _get_review(llm, state: ModuleState) -> str:
     if dep_code:
         dep_parts = []
         for loc, source in dep_code.items():
-            dep_parts.append(f"--- File: {loc} ---\n```python\n{source}\n```")
+            dep_parts.append(f"--- File: {loc} ---\n```python\n{source.replace('{', '{{').replace('}', '}}')}\n```")
         dependency_context = (
             "DEPENDENCY CONTEXT\n"
             "These are the source files this module depends on.\n"
@@ -51,7 +53,14 @@ async def _get_review(llm, state: ModuleState) -> str:
         ("human", human_template)
     ])
 
-    func_logger.info(f"Reviewer ({model_name}): Sending prompt for '{state['module_location']}'.")
+    review_round = state.get("review_round_count", 0) + 1
+    func_logger.info(
+        "[Session %d, Review Round %d] Reviewer (%s): sending prompt for '%s'.",
+        session,
+        review_round,
+        model_name,
+        state['module_location'],
+    )
     # The debug log will go to the file, not the console, per logger.py setup
     func_logger.debug(
         "Reviewer Prompt for %s:\n%s",
@@ -65,6 +74,40 @@ async def _get_review(llm, state: ModuleState) -> str:
             "code": state['code']
         })
         func_logger.debug(f"Reviewer ({model_name}) Response:\n{response.content}")
+
+        # INFO: log response summary
+        raw_content = response.content
+        if isinstance(raw_content, list):
+            raw_text = "".join(
+                block if isinstance(block, str) else
+                block.get("text", "") if isinstance(block, dict) else
+                getattr(block, "text", str(block))
+                for block in raw_content
+            )
+        else:
+            raw_text = str(raw_content)
+
+        first_line = raw_text.strip().split("\n")[0]
+        func_logger.info(
+            "[Session %d, Review Round %d] Reviewer (%s): received review (%s).",
+            session,
+            review_round,
+            model_name,
+            first_line[:100] if len(first_line) > 100 else first_line,
+        )
+
+        # TRACE: log token usage if available
+        if hasattr(response, "usage_metadata"):
+            meta = response.usage_metadata
+            func_logger.trace(
+                "[Session %d, Review Round %d] Reviewer (%s) tokens: input=%s, output=%s",
+                session,
+                review_round,
+                model_name,
+                meta.get("input_tokens", "?"),
+                meta.get("output_tokens", "?"),
+            )
+
         content = response.content
         if isinstance(content, list):
             content = "".join(
@@ -73,6 +116,10 @@ async def _get_review(llm, state: ModuleState) -> str:
                 getattr(block, "text", str(block))
                 for block in content
             )
+
+        resp_logger.info(
+            f"[Session {session}, Review Round {review_round}] Reviewer ({model_name}) Response:\n{content}"
+        )
     except Exception as e:
         func_logger.warning(
             f"Reviewer ({model_name}) API call failed: {e}. "

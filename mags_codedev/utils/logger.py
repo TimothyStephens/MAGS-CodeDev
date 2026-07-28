@@ -22,9 +22,17 @@ from typing import Optional
 
 logging.addLevelName(5, "TRACE")
 
+
+def trace(self, message, *args, **kwargs):
+    """Log a TRACE-level message (below DEBUG)."""
+    if self.isEnabledFor(5):
+        self._log(5, message, args, **kwargs)  # type: ignore[attr-defined]
+
+
+logging.Logger.trace = trace
+
 # Module-level root logger (lazy setup via setup_logger).
 logger = logging.getLogger("mags_codedev")
-
 # --------------- constants ---------------
 
 _LOG_DIR = "logs"
@@ -94,7 +102,7 @@ def setup_logger(
     os.makedirs(base_dir, exist_ok=True)
 
     level = _level_for(log_level)
-    clvl = _level_for(console_level) if console_level else level
+    clvl = _level_for(console_level) if console_level else logging.INFO
 
     # Root logger
     root = logging.getLogger("mags_codedev")
@@ -103,12 +111,11 @@ def setup_logger(
     # Clear existing handlers (avoid duplicates on repeated calls)
     root.handlers.clear()
 
-    # Console handler
+    # Console handler — always INFO to avoid terminal spam
     console = logging.StreamHandler()
-    console.setLevel(clvl)
+    console.setLevel(logging.INFO)
     console.setFormatter(_fmt())
     root.addHandler(console)
-
     # workflow.log — rotating, append
     wf_path = os.path.join(base_dir, _WORKFLOW_LOG)
     root.addHandler(
@@ -161,5 +168,39 @@ def get_function_logger(
     child.addHandler(_make_handler(log_path, level))
 
     return child
+
+
+def get_response_logger(
+    func_hash: str,
+    *,
+    base_dir: str = ".mags-codedev",
+    log_level: str = "info",
+) -> logging.Logger:
+    """Return a non-propagating logger that writes ONLY to the module log file.
+
+    Used for logging LLM response content to ``logs/<hash>.log`` without
+    leaking into ``workflow.log`` or the console.
+
+    Returns the root logger when *func_hash* is ``None`` or empty.
+    """
+    if not func_hash:
+        return logger
+
+    resp_name = f"mags_codedev.resp.{func_hash}"
+    resp = logging.getLogger(resp_name)
+    level = _level_for(log_level)
+
+    # Always replace handlers — prevents stale path on re-runs
+    for h in list(resp.handlers):
+        h.close()
+        resp.removeHandler(h)
+    resp.setLevel(level)
+    resp.propagate = False  # do NOT flow into workflow.log or console
+
+    # Write to the same per-module log file
+    log_path = os.path.join(base_dir, _LOG_DIR, f"{func_hash}.log")
+    resp.addHandler(_make_handler(log_path, level))
+
+    return resp
 
 

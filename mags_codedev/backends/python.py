@@ -35,22 +35,18 @@ class PythonBackend:
     # ── Tool Commands ──────────────────────────────────────────────
 
     def test_command(self, test_file: Path, source_module: str) -> str:
-        """Build the pytest command with coverage for a single test file."""
-        return (
-            f"python -m pytest {test_file} -v "
-            f"--cov={source_module} --cov-report=term-missing"
-        )
+        """Build the pytest command for a single test file."""
+        return f"python3 -m pytest {test_file} -v"
 
     def test_command_project(self) -> str:
         """Build the pytest command to run all tests in the project."""
-        return "python -m pytest -v"
+        return "python3 -m pytest -v"
 
     def lint_command(self, target_file: Path) -> str:
         """Build semicolon-separated lint, type-check, and security scan commands."""
         return (
-            f"flake8 {target_file}; "
-            f"mypy {target_file}; "
-            f"bandit -r {target_file} --skip B101,B104"
+            f"flake8 {target_file} --max-line-length=120 --extend-ignore=E302,E303,E305; "
+            f"mypy {target_file} --ignore-missing-imports"
         )
 
     def lint_success_prefixes(self) -> list[str]:

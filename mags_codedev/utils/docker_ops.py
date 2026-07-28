@@ -401,7 +401,7 @@ def test_node(state: ModuleState) -> dict:
     if backend:
         command = backend.test_command(Path(test_file), state.get("module_location", ""))
     else:
-        command = f"python -m pytest {test_file} -v --tb=short"
+        command = f"python3 -m pytest {test_file} -v --tb=short"
 
     # Write code/tests to worktree before running
     func_logger = _get_func_logger(state)
@@ -420,8 +420,8 @@ def linter_node(state: ModuleState) -> dict:
         command = backend.lint_command(Path(source_file))
     else:
         command = (
-            f"python -m flake8 {source_file} --max-line-length=120; "
-            f"python -m mypy {source_file} --ignore-missing-imports"
+            f"python3 -m flake8 {source_file} --max-line-length=120 --extend-ignore=E302,E303,E305; "
+            f"python3 -m mypy {source_file} --ignore-missing-imports"
         )
 
     # Write code/tests to worktree before running

@@ -5,13 +5,15 @@ from pathlib import Path
 from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import get_llm
 from mags_codedev.utils.retry import invoke_with_retry
-from mags_codedev.utils.llm_helpers import resolve_logger, strip_markdown_code
+from mags_codedev.utils.llm_helpers import resolve_logger, resolve_response_logger, strip_markdown_code
 
 
 def tester_node(state: ModuleState) -> dict:
     """Writes comprehensive unit tests."""
     config_path = state["config_path"]
     func_logger = resolve_logger(state.get("log_filepath"))
+    resp_logger = resolve_response_logger(state.get("log_filepath"))
+    session = state.get("_session_number", 1)
     backend = state.get("backend")
 
     source_location = state["module_location"]
@@ -41,7 +43,7 @@ def tester_node(state: ModuleState) -> dict:
     if dep_code:
         dep_parts = []
         for loc, source in dep_code.items():
-            dep_parts.append(f"--- File: {loc} ---\n```python\n{source}\n```")
+            dep_parts.append(f"--- File: {loc} ---\n```python\n{source.replace('{', '{{').replace('}', '}}')}\n```")
         dependency_context = (
             "DEPENDENCY CONTEXT\n"
             "These are the source files this module depends on.\n"
@@ -116,9 +118,14 @@ def tester_node(state: ModuleState) -> dict:
         ("human", human_template),
     ])
 
-    func_logger.info(f"Tester: Sending prompt for '{state['module_location']}'.")
+    iteration = state.get("iteration_count", 0) + 1
+    func_logger.info(
+        "[Session %d, Iteration %d] Tester: sending prompt for '%s'.",
+        session,
+        iteration,
+        state['module_location'],
+    )
     func_logger.debug(f"Tester Prompt:\n{prompt.format(**invoke_params)}")
-
     # Offline mode: generate stub tests without API call
     if state.get("offline"):
         module_name = Path(state["module_location"]).stem
@@ -139,6 +146,27 @@ def tester_node(state: ModuleState) -> dict:
             chain = prompt | llm
             response = invoke_with_retry(chain, invoke_params)
             func_logger.debug(f"Tester Response:\n{response.content}")
+
+            # INFO: log response summary
+            first_line = response.content.strip().split("\n")[0]
+            func_logger.info(
+                "[Session %d, Iteration %d] Tester: received response (%s).",
+                session,
+                iteration,
+                first_line[:100] if len(first_line) > 100 else first_line,
+            )
+
+            # TRACE: log token usage if available
+            if hasattr(response, "usage_metadata"):
+                meta = response.usage_metadata
+                func_logger.trace(
+                    "[Session %d, Iteration %d] Tester tokens: input=%s, output=%s",
+                    session,
+                    iteration,
+                    meta.get("input_tokens", "?"),
+                    meta.get("output_tokens", "?"),
+                )
+
             response_content = strip_markdown_code(response.content)
         except Exception as e:
             func_logger.warning(
@@ -158,6 +186,9 @@ def tester_node(state: ModuleState) -> dict:
             )
             state.setdefault("last_error", str(e))
 
+    resp_logger.info(f"[Session {session}, Iteration {iteration}] Tester Response:\n{response_content}")
+
     return {
         "tests": response_content + "\n",
+        "iteration_count": state.get("iteration_count", 0),
     }
