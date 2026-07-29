@@ -1,4 +1,5 @@
 import pytest
+import hashlib
 import os
 from mags_codedev.utils.db import (
     init_db, hash_spec, is_function_built, mark_function_built,
@@ -35,19 +36,25 @@ class TestDatabase:
         base_dir = os.path.join(temp_dir, ".mags-codedev")
         init_db(base_dir=base_dir)
 
+        code_content = "def foo(): return 42"
+        tests_content = "def test_foo(): assert foo() == 42"
         save_artifact(
             location="src/foo.py",
-            code="def foo(): return 42",
-            tests="def test_foo(): assert foo() == 42",
+            code=code_content,
+            tests=tests_content,
             spec_hash="abc123",
             base_dir=base_dir,
         )
+
+        expected_code_hash = hashlib.sha256(code_content.encode("utf-8")).hexdigest()
+        expected_test_hash = hashlib.sha256(tests_content.encode("utf-8")).hexdigest()
 
         artifact = load_artifact("src/foo.py", base_dir=base_dir)
         assert artifact is not None
         assert artifact["code"] == "def foo(): return 42"
         assert artifact["tests"] == "def test_foo(): assert foo() == 42"
-        assert artifact["spec_hash"] == "abc123"
+        assert artifact["code_hash"] == expected_code_hash
+        assert artifact["test_hash"] == expected_test_hash
 
     def test_load_artifact_not_found(self, temp_dir):
         base_dir = os.path.join(temp_dir, ".mags-codedev")

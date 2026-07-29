@@ -5,14 +5,17 @@ from pathlib import Path
 from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import get_llm
 from mags_codedev.utils.retry import invoke_with_retry
-from mags_codedev.utils.llm_helpers import resolve_logger, resolve_response_logger, strip_markdown_code
+from mags_codedev.utils.llm_helpers import strip_markdown_code
+from mags_codedev.utils.logger import get_dual_loggers
 
 
 def tester_node(state: ModuleState) -> dict:
     """Writes comprehensive unit tests."""
     config_path = state["config_path"]
-    func_logger = resolve_logger(state.get("log_filepath"))
-    resp_logger = resolve_response_logger(state.get("log_filepath"))
+    func_logger, resp_logger = get_dual_loggers(state.get("log_filepath"))
+    reason = state.get("_next_reason", "")
+    if reason:
+        func_logger.info(f"[Reason] {reason}")
     session = state.get("_session_number", 1)
     backend = state.get("backend")
 
@@ -126,8 +129,38 @@ def tester_node(state: ModuleState) -> dict:
         state['module_location'],
     )
     func_logger.debug(f"Tester Prompt:\n{prompt.format(**invoke_params)}")
-    # Offline mode: generate stub tests without API call
-    if state.get("offline"):
+    llm = get_llm(role="tester", config_path=config_path)
+    try:
+        chain = prompt | llm
+        response = invoke_with_retry(chain, invoke_params)
+        func_logger.debug(f"Tester Response:\n{response.content}")
+
+        # INFO: log response summary
+        first_line = response.content.strip().split("\n")[0]
+        func_logger.info(
+            "[Session %d, Iteration %d] Tester: received response (%s).",
+            session,
+            iteration,
+            first_line[:100] if len(first_line) > 100 else first_line,
+        )
+
+        # TRACE: log token usage if available
+        if hasattr(response, "usage_metadata"):
+            meta = response.usage_metadata
+            func_logger.trace(
+                "[Session %d, Iteration %d] Tester tokens: input=%s, output=%s",
+                session,
+                iteration,
+                meta.get("input_tokens", "?"),
+                meta.get("output_tokens", "?"),
+            )
+
+        response_content = strip_markdown_code(response.content)
+    except Exception as e:
+        func_logger.warning(
+            f"LLM API call failed for tests '{state['module_location']}': "
+            f"{e}. Generating stub tests."
+        )
         module_name = Path(state["module_location"]).stem
         response_content = (
             f"import pytest\n\n\n"
@@ -136,57 +169,12 @@ def tester_node(state: ModuleState) -> dict:
             f"\n"
             f"    def test_{module_name}_main(self):\n"
             f'        """Test {module_name}_main."""\n'
+            f"        # TODO: Implement test for {module_name}_main\n"
             f"        pass\n"
         )
-        func_logger.info(f"Offline mode: generated stub tests for '{state['module_location']}'.")
-    else:
-        # FIX M1: Get LLM only when actually needed (not in offline mode)
-        llm = get_llm(role="tester", config_path=config_path)
-        try:
-            chain = prompt | llm
-            response = invoke_with_retry(chain, invoke_params)
-            func_logger.debug(f"Tester Response:\n{response.content}")
+        state.setdefault("last_error", str(e))
 
-            # INFO: log response summary
-            first_line = response.content.strip().split("\n")[0]
-            func_logger.info(
-                "[Session %d, Iteration %d] Tester: received response (%s).",
-                session,
-                iteration,
-                first_line[:100] if len(first_line) > 100 else first_line,
-            )
-
-            # TRACE: log token usage if available
-            if hasattr(response, "usage_metadata"):
-                meta = response.usage_metadata
-                func_logger.trace(
-                    "[Session %d, Iteration %d] Tester tokens: input=%s, output=%s",
-                    session,
-                    iteration,
-                    meta.get("input_tokens", "?"),
-                    meta.get("output_tokens", "?"),
-                )
-
-            response_content = strip_markdown_code(response.content)
-        except Exception as e:
-            func_logger.warning(
-                f"LLM API call failed for tests '{state['module_location']}': "
-                f"{e}. Generating stub tests."
-            )
-            module_name = Path(state["module_location"]).stem
-            response_content = (
-                f"import pytest\n\n\n"
-                f"class Test{module_name.replace('_', ' ').title().replace(' ', '')}:\n"
-                f'    """Test {module_name}."""\n'
-                f"\n"
-                f"    def test_{module_name}_main(self):\n"
-                f'        """Test {module_name}_main."""\n'
-                f"        # TODO: Implement test for {module_name}_main\n"
-                f"        pass\n"
-            )
-            state.setdefault("last_error", str(e))
-
-    resp_logger.info(f"[Session {session}, Iteration {iteration}] Tester Response:\n{response_content}")
+    resp_logger.debug(f"[Session {session}, Iteration {iteration}] Tester Response:\n{response_content}")
 
     return {
         "tests": response_content + "\n",

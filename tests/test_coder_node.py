@@ -20,7 +20,6 @@ class TestCoderNode:
         state["review_comments"] = ["Add input validation", "Handle empty list case"]
         state["code"] = "def foo(x): return x"
         state["tests"] = "def test_foo(): pass"
-        state["offline"] = False
 
         captured_inputs = {}
         def capture_invoke(chain, inputs):
@@ -44,7 +43,6 @@ class TestCoderNode:
         state["iteration_count"] = 2
         state["test_error_summary"] = "TypeError: 'NoneType' object has no attribute 'strip'"
         state["code"] = "def foo(): pass"
-        state["offline"] = False
 
         captured_inputs = {}
         def capture_invoke(chain, inputs):
@@ -64,7 +62,6 @@ class TestCoderNode:
         """First run (iteration_count=0) should not include error feedback."""
         state = sample_module_state
         state["iteration_count"] = 0
-        state["offline"] = False
 
         captured_inputs = {}
         def capture_invoke(chain, inputs):
@@ -80,14 +77,3 @@ class TestCoderNode:
         assert "Fix the following" not in narrative, \
             f"First run should not be in fix mode: {narrative}"
 
-    def test_offline_mode_generates_stub(self, sample_module_state):
-        """Offline mode should generate a stub without API calls."""
-        state = sample_module_state
-        state["offline"] = True
-
-        with patch("mags_codedev.agents.coder.invoke_with_retry") as mock_invoke:
-            result = coder_node(state)
-
-        mock_invoke.assert_not_called()
-        assert "code" in result
-        assert "foo" in result["code"]  # module name derived from location

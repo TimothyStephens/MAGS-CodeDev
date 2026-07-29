@@ -71,7 +71,6 @@ def sample_module_state(temp_dir, mock_config_path):
         test_results="",
         lint_results="",
         test_error_summary="",
-        lint_error_summary="",
         review_comments=[],
         error_location=None,
         previous_code_hash=None,
@@ -81,5 +80,4 @@ def sample_module_state(temp_dir, mock_config_path):
         max_review_rounds=3,
         review_round_count=0,
         status="in_progress",
-        offline=True,
     )

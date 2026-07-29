@@ -1,12 +1,12 @@
 """Log checker agent: analyzes test/lint logs for bug diagnosis."""
 
 import json
-import re
 from langchain_core.prompts import ChatPromptTemplate
 from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import get_llm
 from mags_codedev.utils.retry import invoke_with_retry
-from mags_codedev.utils.llm_helpers import resolve_logger, resolve_response_logger, extract_content, strip_markdown_code
+from mags_codedev.utils.llm_helpers import extract_content, strip_markdown_code
+from mags_codedev.utils.logger import get_dual_loggers
 
 
 def log_checker_node(state: ModuleState) -> dict:
@@ -31,26 +31,14 @@ def log_checker_node(state: ModuleState) -> dict:
             "lint_results": "",  # Consume the (empty) lint results
         }
 
-    func_logger = resolve_logger(state.get("log_filepath"))
-    resp_logger = resolve_response_logger(state.get("log_filepath"))
+    func_logger, resp_logger = get_dual_loggers(state.get("log_filepath"))
+    # Log the reason for this node being invoked
+    reason = state.get("_next_reason", "")
+    if reason:
+        func_logger.info(f"[Reason] {reason}")
     session = state.get("_session_number", 1)
     config_path = state["config_path"]
 
-    # Offline mode: use basic log analysis without API call
-    if state.get("offline"):
-        error_summary, error_location = _basic_log_analysis(
-            state.get("test_results", ""),
-            state.get("lint_results", "")
-        )
-        func_logger.info(f"Offline mode: basic log analysis for '{state['module_location']}'.")
-        return {
-            "test_error_summary": error_summary,
-            "error_location": error_location,
-            "test_results": "",
-            "lint_results": "",
-        }
-
-    # FIX M1: Get LLM only when actually needed (not in offline mode)
     llm = get_llm(role="log_checker", config_path=config_path)
 
     system_prompt = (
@@ -145,17 +133,34 @@ def log_checker_node(state: ModuleState) -> dict:
 
         response_content = strip_markdown_code(response_text)
 
-        resp_logger.info(
+        resp_logger.debug(
             f"[Session {session}, Iteration {iteration}] Log Checker Response:\n{response_content}"
         )
     except Exception as e:
         func_logger.warning(
-            f"Log checker API call failed: {e}. Using basic log analysis."
+            f"Log checker API call failed: {e}. Falling back to basic analysis."
         )
-        error_summary, error_location = _basic_log_analysis(
-            state.get("test_results", ""),
-            state.get("lint_results", "")
-        )
+        test_results = state.get("test_results", "")
+        lint_results = state.get("lint_results", "")
+        test_upper = test_results.upper()
+
+        # Check for test failure keywords
+        failure_keywords = ["FAILED", "ERROR"]
+        no_tests_indicators = ["collected 0 items", "no tests ran", "no tests collected"]
+
+        if any(kw in test_upper for kw in failure_keywords):
+            error_summary = f"Test failures detected: {test_results[:200]}"
+            error_location = "SOURCE_CODE"
+        elif any(ind in test_results.lower() for ind in no_tests_indicators):
+            error_summary = "No tests were collected. Check test file location and naming."
+            error_location = "SOURCE_CODE"
+        elif lint_results and "Success: no issues found" not in lint_results:
+            error_summary = f"Linter/type-checker issues detected: {lint_results[:200]}"
+            error_location = "SOURCE_CODE"
+        else:
+            error_summary = f"LLM unavailable; basic analysis inconclusive: {e}"
+            error_location = None
+
         return {
             "test_error_summary": error_summary,
             "error_location": error_location,
@@ -181,49 +186,3 @@ def log_checker_node(state: ModuleState) -> dict:
         "lint_results": "",
     }
 
-
-def _basic_log_analysis(test_results: str, lint_results: str) -> tuple:
-    """Basic log analysis when LLM is unavailable.
-
-    Returns (error_summary, error_location).
-    FIX m2: Improved error_location heuristic — analyzes traceback patterns
-    to distinguish test code errors from source code errors.
-    """
-    parts = []
-    # Only check for actual test failures (not pip install errors)
-    test_failed = bool(
-        re.search(r"\d+ failed", test_results) or re.search(r"\bFAILED\b", test_results)
-    )
-    if test_failed:
-        parts.append("Tests failed. Check the test output for specific failures.")
-    if lint_results and re.search(r"(flake8|mypy|pylint|E\d{3}|W\d{3})", lint_results):
-        parts.append("Linter warnings found. Address code quality issues.")
-
-    summary = " ".join(parts) if parts else "No clear issues detected in logs."
-
-    # Determine error location from test traceback patterns
-    error_location = _infer_error_location(test_results)
-
-    return summary, error_location
-
-
-def _infer_error_location(test_results: str) -> str:
-    """Infer whether the error is in SOURCE_CODE or TEST_CODE from test output.
-
-    Heuristic: if the traceback ONLY points to test files (no source frames),
-    it's likely TEST_CODE. If source code frames appear, default to SOURCE_CODE.
-    """
-    # Only mark as TEST_CODE if traceback is entirely within test files
-    # and the error is a test-specific framework error
-    test_specific_errors = [
-        r"pytest\.skip",
-        r"test\s+function\s+.*not\s+found",
-        r"no\s+tests\s+ran",
-        # Match ModuleNotFoundError only for missing test modules
-        r"ModuleNotFoundError.*No module named ['\"]test",
-    ]
-    for pattern in test_specific_errors:
-        if re.search(pattern, test_results, re.IGNORECASE):
-            return "TEST_CODE"
-
-    return "SOURCE_CODE"

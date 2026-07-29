@@ -20,7 +20,6 @@ class TestStateInvariants:
             "test_results": "",
             "lint_results": "",
             "test_error_summary": "",
-            "lint_error_summary": "",
             "review_comments": [],
             "error_location": None,
             "previous_code_hash": None,
@@ -30,7 +29,6 @@ class TestStateInvariants:
             "max_review_rounds": 3,
             "review_round_count": 0,
             "status": "in_progress",
-            "offline": True,
         }
         # If this type-checks, all fields are present
         assert "review_comments" in state

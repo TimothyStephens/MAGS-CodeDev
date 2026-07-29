@@ -9,7 +9,7 @@ from typing import Optional
 
 from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import load_config
-from mags_codedev.utils.logger import logger
+from mags_codedev.utils.logger import logger, _hash_from_filepath
 
 
 # ---- Container runtime detection ----
@@ -78,7 +78,7 @@ From: {from_image}
 """.strip()
 
 
-def _run_with_docker(state: dict, command: str, config: dict, func_logger: logging.Logger, backend=None) -> str:
+def _run_with_docker(state: ModuleState, command: str, config: dict, func_logger: logging.Logger, backend=None) -> str:
     """Runs a command inside a Docker/Podman container, building the image if necessary."""
     # B11: Use _get_container_runtime() instead of dead _get_runtime()
     runtime = _get_container_runtime()
@@ -135,6 +135,11 @@ def _run_with_docker(state: dict, command: str, config: dict, func_logger: loggi
         )
         output = result.stdout + result.stderr
         func_logger.debug(f"{runtime} output:\n{output}")
+        func_logger.info(f"Docker tests completed (exit code {result.returncode})")
+        if result.returncode != 0:
+            func_logger.info(f"Test failures detected in {runtime} container.")
+        else:
+            func_logger.info(f"{runtime} tests passed.")
         return output
     except subprocess.TimeoutExpired:
         return "ERROR: Command timed out (120s limit)."
@@ -142,8 +147,8 @@ def _run_with_docker(state: dict, command: str, config: dict, func_logger: loggi
         return f"ERROR: {runtime} execution failed: {e}"
 
 
-def _run_with_apptainer(state: dict, command: str, config: dict, func_logger: logging.Logger, backend=None) -> str:
     """Runs a command inside an Apptainer/Singularity container."""
+def _run_with_apptainer(state: ModuleState, command: str, config: dict, func_logger: logging.Logger, backend=None) -> str:
     # B12: Detect actual binary (apptainer or singularity)
     runtime_bin = "apptainer" if shutil.which("apptainer") else "singularity"
     runtime_name = runtime_bin  # For logging
@@ -197,6 +202,11 @@ def _run_with_apptainer(state: dict, command: str, config: dict, func_logger: lo
         )
         output = result.stdout + result.stderr
         func_logger.debug(f"{runtime_name} output:\n{output}")
+        func_logger.info(f"Apptainer tests completed (exit code {result.returncode})")
+        if result.returncode != 0:
+            func_logger.info(f"Test failures detected in {runtime_name} container.")
+        else:
+            func_logger.info(f"{runtime_name} tests passed.")
         return output
     except subprocess.TimeoutExpired:
         return "ERROR: Command timed out (120s limit)."
@@ -204,8 +214,8 @@ def _run_with_apptainer(state: dict, command: str, config: dict, func_logger: lo
         return f"ERROR: {runtime_name} execution failed: {e}"
 
 
-def _run_locally(state: dict, command: str, config: dict, func_logger: logging.Logger, backend=None) -> str:
     """Runs a command in the local environment."""
+def _run_locally(state: ModuleState, command: str, config: dict, func_logger: logging.Logger, backend=None) -> str:
     try:
         worktree_path = state["worktree_path"]
         # B14: Use backend env_vars for local runner too
@@ -220,6 +230,11 @@ def _run_locally(state: dict, command: str, config: dict, func_logger: logging.L
         )
         output = result.stdout + result.stderr
         func_logger.debug(f"Local output:\n{output}")
+        func_logger.info(f"Local tests completed (exit code {result.returncode})")
+        if result.returncode != 0:
+            func_logger.info("Test failures detected in local environment.")
+        else:
+            func_logger.info("Local tests passed.")
         return output
     except subprocess.TimeoutExpired:
         return "ERROR: Command timed out (120s limit)."
@@ -238,8 +253,7 @@ def _run_in_environment(state: ModuleState, command: str) -> str:
 
     backend = state.get("backend")
     if state.get("log_filepath"):
-        # B13: os already imported at module level
-        log_hash = os.path.basename(state["log_filepath"]).replace(".log", "")
+        log_hash = _hash_from_filepath(state["log_filepath"])
         func_logger = logging.getLogger(f"mags_codedev.func.{log_hash}")
     else:
         func_logger = logger
@@ -311,7 +325,7 @@ def run_command_in_project_env(
 def _get_func_logger(state: ModuleState) -> logging.Logger:
     """Extract the function logger from state, falling back to the root logger."""
     if state.get("log_filepath"):
-        log_hash = os.path.basename(state["log_filepath"]).replace(".log", "")
+        log_hash = _hash_from_filepath(state["log_filepath"])
         return logging.getLogger(f"mags_codedev.func.{log_hash}")
     return logger
 
@@ -430,3 +444,10 @@ def linter_node(state: ModuleState) -> dict:
 
     logs = _run_in_environment(state, command)
     return {"lint_results": logs}
+
+__all__ = [
+    "run_command_in_project_env",
+    "test_node",
+    "linter_node",
+]
+

@@ -52,22 +52,11 @@ def start_chat_repl(
     config_path: Path,
     system_message_override: Optional[str] = None,
     command_name: str = "chat",
-    offline: bool = False,
 ) -> Any:
     """Initializes and returns the Chat Agent graph for the CLI."""
     _ = load_config(config_path)
 
-    if offline:
-        from langchain_core.language_models import FakeListChatModel
-
-        llm = FakeListChatModel(
-            responses=[
-                "Offline mode. I cannot process LLM requests. "
-                "Use --no-offline or set API keys for full functionality."
-            ],
-        )
-    else:
-        llm = get_llm(role="chat", config_path=config_path)
+    llm = get_llm(role="chat", config_path=config_path)
 
     tools = [read_file, write_file]
 

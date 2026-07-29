@@ -23,10 +23,6 @@ def chat(
     config_path: Optional[Path] = typer.Option(
         None, "--config", "-c", help=_CONFIG_HELP_TEXT, resolve_path=True,
     ),
-    offline: bool = typer.Option(
-        False, "--offline", "--no-llm",
-        help="Skip LLM API calls (use stubs instead).",
-    ),
     verbose: int = typer.Option(
         0, "--verbose", "-v", count=True,
         help="Verbosity level (0=info, 1=debug, 2=trace).",
@@ -49,22 +45,15 @@ def chat(
     logger.info(f"Using configuration: {config_path}")
     from mags_codedev.agents.chat_agent import start_chat_repl
 
-    if offline:
-        console.print("[yellow]Offline mode: chat uses stub LLM (no API calls).[/yellow]")
-    else:
-        console.print("[bold blue]Entering Chat Mode (Type 'exit' to quit)...[/bold blue]")
+    console.print("[bold blue]Entering Chat Mode (Type 'exit' to quit)...[/bold blue]")
 
-    agent_graph = start_chat_repl(config_path=config_path, command_name="chat", offline=offline)
+    agent_graph = start_chat_repl(config_path=config_path, command_name="chat")
 
-    # Token tracking (only meaningful in online mode)
-    if not offline:
-        llm = get_llm("chat", config_path)
-        model_name = getattr(llm, "model_name", getattr(llm, "model", "unknown"))
-        callback = TokenLoggingCallbackHandler(
-            role="command_chat", model_name=model_name, base_dir=base_dir
-        )
-    else:
-        callback = None
+    llm = get_llm("chat", config_path)
+    model_name = getattr(llm, "model_name", getattr(llm, "model", "unknown"))
+    callback = TokenLoggingCallbackHandler(
+        role="command_chat", model_name=model_name, base_dir=base_dir
+    )
 
     config = {
         "configurable": {"thread_id": "cli-session"},

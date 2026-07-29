@@ -50,4 +50,4 @@ class ModuleState(TypedDict, total=False):
     # Dependency Context
     dependency_code: Dict[str, str]   # Maps dep location -> source code
     project_instructions: str         # Project-level instructions from AGENT.md
-    offline: bool                     # Skip LLM API calls (use stubs)
+    _next_reason: str                 # Routing reason for INFO logging

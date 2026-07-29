@@ -8,7 +8,6 @@ class TestReviewerNode:
     def test_all_reviewers_fail_means_not_approved(self, sample_module_state):
         """BUG FIX VERIFICATION: all reviewers failing must not approve silently."""
         state = sample_module_state
-        state["offline"] = False
         state["code"] = "def foo(): return 42"
 
         mock_llm = MagicMock()
@@ -31,7 +30,6 @@ class TestReviewerNode:
     def test_lgtm_means_approved(self, sample_module_state):
         """All reviewers saying LGTM means approved."""
         state = sample_module_state
-        state["offline"] = False
         state["code"] = "def foo(): return 42"
 
         mock_llm = MagicMock()
@@ -49,7 +47,6 @@ class TestReviewerNode:
     def test_actionable_review_means_in_progress(self, sample_module_state):
         """Actionable review comments mean code needs revision."""
         state = sample_module_state
-        state["offline"] = False
         state["code"] = "def foo(): return 42"
 
         mock_llm = MagicMock()

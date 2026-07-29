@@ -4,7 +4,7 @@ import hashlib
 from typing import Any
 from langgraph.constants import END
 from langgraph.graph import StateGraph
-from mags_codedev.utils.logger import get_function_logger, get_response_logger
+from mags_codedev.utils.logger import get_dual_loggers
 from mags_codedev.utils.db import add_iterations_to_module, get_total_iterations
 
 from mags_codedev.state import ModuleState
@@ -18,9 +18,12 @@ from mags_codedev.agents.reviewer import multi_llm_review_node
 # ---- Module-level edge functions (extracted for testability) ----
 
 def evaluate_test_results(state: ModuleState) -> str:
-    """Check if tests passed, failed, or max iterations reached."""
+    """Check if tests passed, failed, or max iterations reached.
+    Sets _next_reason on state and returns route string."""
     max_iters = state.get("max_test_fix_iterations", 5)
     if max_iters > 0 and state["iteration_count"] >= max_iters:
+        reason = f"Max test fix iterations ({max_iters}) reached."
+        state["_next_reason"] = reason
         return "max_iterations_reached"
 
     backend = state.get("backend")
@@ -33,6 +36,7 @@ def evaluate_test_results(state: ModuleState) -> str:
 
     # Check for failure keywords first
     if any(kw in test_upper for kw in failure_keywords):
+        state["_next_reason"] = "Tests failed, sending to log checker for analysis."
         return "tests_failed"
 
     # Check for "no tests collected" (pytest exit code 5)
@@ -43,24 +47,25 @@ def evaluate_test_results(state: ModuleState) -> str:
         "no tests collected",
     ]
     if any(ind in test_results.lower() for ind in no_tests_indicators):
+        state["_next_reason"] = "No tests collected, sending to log checker."
         return "tests_failed"
 
     # Empty results = something went wrong
     if not test_results.strip():
+        state["_next_reason"] = "Empty test results, sending to log checker."
         return "tests_failed"
 
+    state["_next_reason"] = "Tests passed, proceeding to linting."
     return "tests_passed"
 
 
 def evaluate_logs(state: ModuleState) -> str:
     """Check if log checker found issues, and route accordingly.
-
-    Uses test_error_summary (scoped) which combines test and lint analysis.
-    Trusts error_location from log_checker for routing decisions.
-    Returns 'clean' when no actionable errors found.
-    """
+    Sets _next_reason on state and returns route string."""
     max_iters = state.get("max_test_fix_iterations", 5)
     if max_iters > 0 and state["iteration_count"] >= max_iters:
+        reason = f"Max test fix iterations ({max_iters}) reached."
+        state["_next_reason"] = reason
         return "max_iterations_reached"
 
     # Use test_error_summary (scoped tracking — includes test + lint analysis)
@@ -75,34 +80,46 @@ def evaluate_logs(state: ModuleState) -> str:
             "no issues detected", "no changes required", "all tests passed",
         ]
         if any(phrase in summary_lower for phrase in no_issue_phrases):
+            state["_next_reason"] = "No issues found, proceeding to convergence check."
             return "clean"
     # If there's a test error summary, route based on error_location
     if error_summary:
-        # Linter-only issue (even with explicit location) → cosmetic, let review handle it
+        # Linter-only issue → cosmetic, let review handle it
         if (
             ("linter" in error_summary.lower() or "linting" in error_summary.lower()
              or "style" in error_summary.lower() or "pep 8" in error_summary.lower())
-            and "test" not in error_summary.lower()
             and "assertion" not in error_summary.lower()
+            and "test failed" not in error_summary.lower()
+            and "test error" not in error_summary.lower()
         ):
+            state["_next_reason"] = "Linting only issue (cosmetic), proceeding to review."
             return "clean"
         # If location is explicitly set, trust it
         error_location = state.get("error_location")
         if error_location == "TEST_CODE":
+            state["_next_reason"] = f"Test error found: {error_summary[:120]}"
             return "fix_tests"
         if error_location == "SOURCE_CODE":
+            state["_next_reason"] = f"Source error found: {error_summary[:120]}"
             return "fix_source"
+    state["_next_reason"] = "No issues found, proceeding to convergence check."
     return "clean"
 
 
 def evaluate_reviews(state: ModuleState) -> str:
-    """Check if review found issues, and route accordingly."""
+    """Check if review found issues, and route accordingly.
+    Sets _next_reason on state and returns route string."""
     max_rounds = state.get("max_review_rounds", 3)
     if max_rounds > 0 and state.get("review_round_count", 0) >= max_rounds:
+        reason = f"Max review rounds ({max_rounds}) reached."
+        state["_next_reason"] = reason
         return "max_review_rounds_reached"
 
-    if state.get("review_comments"):
+    review_comments = state.get("review_comments")
+    if review_comments:
+        state["_next_reason"] = f"Reviewer comments found ({len(review_comments)} comment(s)), sending to Coder for fix."
         return "revise"
+    state["_next_reason"] = "All reviewers approved, proceeding to session end."
     return "approved"
 
 
@@ -141,10 +158,15 @@ def check_convergence(state: ModuleState) -> dict:
 
 # L2: Moved to module level to avoid recreating on every build_function_graph() call
 def check_convergence_route(state: ModuleState) -> str:
-    """Route after convergence check: end if failed, else proceed to review."""
+    """Route after convergence check: end if failed, else proceed to review.
+    Sets _next_reason on state and returns route string."""
     if state.get("status") == "failed":
+        state["_next_reason"] = "Convergence check failed, ending session."
         return "__end__"
+    state["_next_reason"] = "Code/tests changed, sending to multi-LLM review."
     return "multi_llm_review"
+
+
 
 
 # ---- Session lifecycle nodes ----
@@ -155,14 +177,10 @@ def _session_banner(char: str = "=") -> str:
 
 def session_start_node(state: ModuleState) -> dict:
     """Log build session start. Always the first node in the graph."""
-    func_logger = get_function_logger(
-        state.get("log_filepath"), base_dir=state.get("base_dir", ".mags-codedev")
-    )
-    resp_logger = get_response_logger(
-        state.get("log_filepath", "").replace(".log", "").split("/")[-1],
+    func_logger, resp_logger = get_dual_loggers(
+        state.get("log_filepath"),
         base_dir=state.get("base_dir", ".mags-codedev"),
     )
-
     session = state.get("_session_number", 1)
     previous = state.get("_previous_iterations", 0)
     max_test = state.get("max_test_fix_iterations", 5)
@@ -179,21 +197,17 @@ def session_start_node(state: ModuleState) -> dict:
     ]
     banner = "\n".join(lines)
     func_logger.info(banner)
-    resp_logger.info(banner)
+    resp_logger.debug(banner)
 
     return {}
 
 
 def session_end_node(state: ModuleState) -> dict:
     """Log build session end. Always the last node before END."""
-    func_logger = get_function_logger(
-        state.get("log_filepath"), base_dir=state.get("base_dir", ".mags-codedev")
-    )
-    resp_logger = get_response_logger(
-        state.get("log_filepath", "").replace(".log", "").split("/")[-1],
+    func_logger, resp_logger = get_dual_loggers(
+        state.get("log_filepath"),
         base_dir=state.get("base_dir", ".mags-codedev"),
     )
-
     session = state.get("_session_number", 1)
     previous = state.get("_previous_iterations", 0)
     iteration_count = state.get("iteration_count", 0)
@@ -217,7 +231,7 @@ def session_end_node(state: ModuleState) -> dict:
     ]
     banner = "\n".join(lines)
     func_logger.info(banner)
-    resp_logger.info(banner)
+    resp_logger.debug(banner)
 
     return {}
 

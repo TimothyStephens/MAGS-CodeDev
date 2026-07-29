@@ -1,19 +1,17 @@
 """Reviewer agent: multi-LLM code review with LGTM/vote aggregation."""
 
 import asyncio
-import logging
 import re
 from langchain_core.prompts import ChatPromptTemplate
 from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import get_reviewer_llms
-from mags_codedev.utils.llm_helpers import resolve_logger, resolve_response_logger
+from mags_codedev.utils.logger import get_dual_loggers, logger
 
 async def _get_review(llm, state: ModuleState) -> str:
     """Helper function to execute a single review asynchronously with retry logic."""
     model_name = getattr(llm, 'model_name', getattr(llm, 'model', 'unknown'))
 
-    func_logger = resolve_logger(state.get("log_filepath"))
-    resp_logger = resolve_response_logger(state.get("log_filepath"))
+    func_logger, resp_logger = get_dual_loggers(state.get("log_filepath"))
     session = state.get("_session_number", 1)
     system_prompt = (
         "You are a strict Code Reviewer.\n"
@@ -117,7 +115,7 @@ async def _get_review(llm, state: ModuleState) -> str:
                 for block in content
             )
 
-        resp_logger.info(
+        resp_logger.debug(
             f"[Session {session}, Review Round {review_round}] Reviewer ({model_name}) Response:\n{content}"
         )
     except Exception as e:
@@ -131,15 +129,6 @@ async def _get_review(llm, state: ModuleState) -> str:
 
 async def multi_llm_review_node(state: ModuleState) -> dict:
     """Runs multiple LLMs concurrently to review the final code."""
-    # Offline mode: skip all reviews, code is approved
-    if state.get("offline"):
-        func_logger = logging.getLogger("mags_codedev")
-        func_logger.info("Offline mode: skipping multi-LLM review.")
-        return {
-            "review_comments": [],
-            "status": "success"
-        }
-
     config_path = state["config_path"]
     llms = get_reviewer_llms(config_path=config_path)
 
@@ -152,14 +141,24 @@ async def multi_llm_review_node(state: ModuleState) -> dict:
 
     if len(failed_reviews) == len(llms) and len(llms) > 0:
         # All reviewers failed — don't approve silently
-        func_logger = logging.getLogger("mags_codedev")
+        func_logger, resp_logger = get_dual_loggers(state.get("log_filepath"))
         func_logger.warning("All reviewer LLM calls failed. Code not approved.")
+
+        reason = state.get("_next_reason", "")
+        if reason:
+            func_logger.info(f"[Reason] {reason}")
         current_rounds = state.get("review_round_count", 0)
         return {
             "review_comments": ["All reviewers failed — please retry the build."],
             "status": "in_progress",
             "review_round_count": current_rounds + 1,
         }
+
+    func_logger, resp_logger = get_dual_loggers(state.get("log_filepath"))
+
+    reason = state.get("_next_reason", "")
+    if reason:
+        func_logger.info(f"[Reason] {reason}")
 
     # B16: Use word boundary regex — "Not LGTM" should NOT be treated as approval
     actionable_comments = [r for r in reviews if not re.search(r"\bLGTM\b", r, re.IGNORECASE)]

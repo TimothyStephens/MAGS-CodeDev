@@ -16,6 +16,7 @@ Logger hierarchy:
 """
 
 import logging
+from pathlib import Path
 import os
 from logging.handlers import RotatingFileHandler
 from typing import Optional
@@ -37,7 +38,9 @@ logger = logging.getLogger("mags_codedev")
 
 _LOG_DIR = "logs"
 _WORKFLOW_LOG = "workflow.log"
-# No rotation — logs grow unbounded (backupCount=0 disables rotation entirely)
+# No rotation — logs grow unbounded. Set _MAX_BYTES_MODULE > 0 for production use.
+# backupCount=0 disables rotation entirely; set _BACKUP_COUNT_MODULE > 0 to retain
+# rotated files (e.g., _BACKUP_COUNT_MODULE=5 keeps 5 rotated copies per module).
 _MAX_BYTES_MODULE = 0
 _BACKUP_COUNT_MODULE = 0
 _MAX_BYTES_WORKFLOW = 0
@@ -48,12 +51,24 @@ _LEVEL_MAP = {"info": logging.INFO, "debug": logging.DEBUG, "trace": 5}
 
 # --------------- helpers ---------------
 
+def _hash_from_filepath(filepath: str) -> str:
+    """Extract the log hash from a file path string."""
+    return Path(filepath).stem
+
+
+_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+_LOG_FORMATTER = logging.Formatter(_LOG_FORMAT)
+
+
+_VALID_LEVELS = {"info", "debug", "trace", "warning", "error", "critical"}
+
+
 def _level_for(level: str) -> int:
-    return _LEVEL_MAP.get(level.lower(), logging.INFO)
+    lower = level.lower()
+    if lower not in _VALID_LEVELS:
+        raise ValueError(f"Unknown log level: {level!r}. Use one of: {_VALID_LEVELS}")
+    return _LEVEL_MAP.get(lower, logging.INFO)
 
-
-def _fmt() -> logging.Formatter:
-    return logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
 
 def _make_handler(
@@ -72,7 +87,7 @@ def _make_handler(
         backupCount=backup_count,
     )
     handler.setLevel(level)
-    handler.setFormatter(_fmt())
+    handler.setFormatter(_LOG_FORMATTER)
     return handler
 
 
@@ -111,10 +126,10 @@ def setup_logger(
     # Clear existing handlers (avoid duplicates on repeated calls)
     root.handlers.clear()
 
-    # Console handler — always INFO to avoid terminal spam
+    # Console handler — use console_level when provided
     console = logging.StreamHandler()
-    console.setLevel(logging.INFO)
-    console.setFormatter(_fmt())
+    console.setLevel(clvl)
+    console.setFormatter(_LOG_FORMATTER)
     root.addHandler(console)
     # workflow.log — rotating, append
     wf_path = os.path.join(base_dir, _WORKFLOW_LOG)
@@ -151,7 +166,7 @@ def get_function_logger(
     if log_filepath is None:
         return logger
 
-    log_hash = os.path.basename(log_filepath).replace(".log", "")
+    log_hash = _hash_from_filepath(log_filepath)
     child_name = f"mags_codedev.func.{log_hash}"
     child = logging.getLogger(child_name)
     level = _level_for(log_level)
@@ -203,4 +218,29 @@ def get_response_logger(
 
     return resp
 
+
+
+
+def get_dual_loggers(
+    log_filepath: str | None,
+    *,
+    base_dir: str = ".mags-codedev",
+    log_level: str = "info",
+) -> tuple[logging.Logger, logging.Logger]:
+    """Return (func_logger, resp_logger) pair.
+
+    Handles the common pattern of creating both a propagating module logger
+    and a non-propagating response logger with identical hash extraction.
+    """
+    func_logger = get_function_logger(log_filepath, base_dir=base_dir, log_level=log_level)
+    hash = _hash_from_filepath(log_filepath) if log_filepath else ""
+    resp_logger = get_response_logger(hash, base_dir=base_dir, log_level=log_level)
+    return func_logger, resp_logger
+
+__all__ = [
+    "setup_logger",
+    "get_function_logger",
+    "get_response_logger",
+    "get_dual_loggers",
+]
 

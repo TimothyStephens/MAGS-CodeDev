@@ -48,10 +48,6 @@ def debug(
     config_path: Optional[Path] = typer.Option(
         None, "--config", "-c", help=_CONFIG_HELP_TEXT, resolve_path=True,
     ),
-    offline: bool = typer.Option(
-        False, "--offline", "--no-llm",
-        help="Skip LLM API calls (use stubs instead).",
-    ),
     verbose: int = typer.Option(
         0, "--verbose", "-v", count=True,
         help="Verbosity level (0=info, 1=debug, 2=trace).",
@@ -173,18 +169,11 @@ def debug(
             console.print("[yellow]Running fix workflow with provided error...[/yellow]")
             await process_module(
                 module_location, spec, status, sem, lock, config_path,
-                initial_error=error_to_fix, offline=offline,
+                initial_error=error_to_fix,
             )
-
         asyncio.run(run_fix(error_msg))
 
     else:
-        if offline:
-            console.print(
-                "[yellow]Offline mode: cannot analyze error without LLM. "
-                "Please specify --module to run fix workflow.[/yellow]"
-            )
-            raise typer.Exit(1)
 
         console.print("[cyan]Analyzing error trace...[/cyan]")
         llm = get_llm("chat", config_path)

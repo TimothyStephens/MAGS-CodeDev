@@ -5,14 +5,17 @@ from langchain_core.prompts import ChatPromptTemplate
 from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import get_llm
 from mags_codedev.utils.retry import invoke_with_retry
-from mags_codedev.utils.llm_helpers import resolve_logger, resolve_response_logger, strip_markdown_code
-
+from mags_codedev.utils.llm_helpers import strip_markdown_code
+from mags_codedev.utils.logger import get_dual_loggers
 
 def coder_node(state: ModuleState) -> dict:
     """Generates or updates the code based on specifications and feedback."""
     config_path = state["config_path"]
-    func_logger = resolve_logger(state.get("log_filepath"))
-    resp_logger = resolve_response_logger(state.get("log_filepath"))
+    func_logger, resp_logger = get_dual_loggers(state.get("log_filepath"))
+    # Log reason if available in state
+    reason = state.get("_next_reason", "")
+    if reason:
+        func_logger.info(f"[Reason] {reason}")
     session = state.get("_session_number", 1)
     backend = state.get("backend")
 
@@ -124,12 +127,49 @@ def coder_node(state: ModuleState) -> dict:
         ),
     )
 
-    # Offline mode: generate stub without API call
-    if state.get("offline"):
+    llm = get_llm(role="coder", config_path=config_path)
+    try:
+        chain = prompt | llm
+        response = invoke_with_retry(chain, {
+            "module_location": state["module_location"],
+            "spec": str(state["spec"]),
+            "project_instructions_block": project_instructions_block,
+            "dependency_context": dependency_context,
+            "prompt_narrative": prompt_narrative,
+            "feedback": feedback
+        })
+        func_logger.debug(f"Coder Response:\n{response.content}")
+
+        # INFO: log response summary (first line / key detail)
+        first_line = response.content.strip().split("\n")[0]
+        func_logger.info(
+            "[Session %d, Iteration %d] Coder: received response (%s).",
+            session,
+            iteration,
+            first_line[:100] if len(first_line) > 100 else first_line,
+        )
+
+        # TRACE: log token usage if available
+        if hasattr(response, "usage_metadata"):
+            meta = response.usage_metadata
+            func_logger.trace(
+                "[Session %d, Iteration %d] Coder tokens: input=%s, output=%s",
+                session,
+                iteration,
+                meta.get("input_tokens", "?"),
+                meta.get("output_tokens", "?"),
+            )
+
+        response_content = strip_markdown_code(response.content)
+    except Exception as e:
+        func_logger.warning(
+            f"LLM API call failed for '{state['module_location']}': "
+            f"{e}. Generating stub implementation."
+        )
         module_name = Path(state["module_location"]).stem
         response_content = (
             f'"""\n{state["spec"].get("description", "")}\n"""\n\n'
-            f"# Stub implementation (offline mode)\n"
+            f"# Stub implementation - generated when LLM API unavailable\n"
             f"# Module: {state['module_location']}\n\n\n"
             f"def {module_name}_main():\n"
             f'    """Main function for {module_name}."""\n'
@@ -137,62 +177,9 @@ def coder_node(state: ModuleState) -> dict:
             f'if __name__ == "__main__":\n'
             f"    {module_name}_main()\n"
         )
-        func_logger.info(f"Offline mode: generated stub for '{state['module_location']}'.")
-    else:
-        # FIX M1: Get LLM only when actually needed (not in offline mode)
-        llm = get_llm(role="coder", config_path=config_path)
-        try:
-            chain = prompt | llm
-            response = invoke_with_retry(chain, {
-                "module_location": state["module_location"],
-                "spec": str(state["spec"]),
-                "project_instructions_block": project_instructions_block,
-                "dependency_context": dependency_context,
-                "prompt_narrative": prompt_narrative,
-                "feedback": feedback
-            })
-            func_logger.debug(f"Coder Response:\n{response.content}")
+        state.setdefault("last_error", str(e))
 
-            # INFO: log response summary (first line / key detail)
-            first_line = response.content.strip().split("\n")[0]
-            func_logger.info(
-                "[Session %d, Iteration %d] Coder: received response (%s).",
-                session,
-                iteration,
-                first_line[:100] if len(first_line) > 100 else first_line,
-            )
-
-            # TRACE: log token usage if available
-            if hasattr(response, "usage_metadata"):
-                meta = response.usage_metadata
-                func_logger.trace(
-                    "[Session %d, Iteration %d] Coder tokens: input=%s, output=%s",
-                    session,
-                    iteration,
-                    meta.get("input_tokens", "?"),
-                    meta.get("output_tokens", "?"),
-                )
-
-            response_content = strip_markdown_code(response.content)
-        except Exception as e:
-            func_logger.warning(
-                f"LLM API call failed for '{state['module_location']}': "
-                f"{e}. Generating stub implementation."
-            )
-            module_name = Path(state["module_location"]).stem
-            response_content = (
-                f'"""\n{state["spec"].get("description", "")}\n"""\n\n'
-                f"# Stub implementation - generated when LLM API unavailable\n"
-                f"# Module: {state['module_location']}\n\n\n"
-                f"def {module_name}_main():\n"
-                f'    """Main function for {module_name}."""\n'
-                f"    pass\n\n\n"
-                f'if __name__ == "__main__":\n'
-                f"    {module_name}_main()\n"
-            )
-            state.setdefault("last_error", str(e))
-
-    resp_logger.info(f"[Session {session}, Iteration {iteration}] Coder Response:\n{response_content}")
+    resp_logger.debug(f"[Session {session}, Iteration {iteration}] Coder Response:\n{response_content}")
 
     return {
         "code": response_content + "\n",

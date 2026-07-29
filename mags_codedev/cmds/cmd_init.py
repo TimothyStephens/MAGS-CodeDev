@@ -50,10 +50,6 @@ def init(
             "and open editor for config."
         ),
     ),
-    offline: bool = typer.Option(
-        False, "--offline", "--no-llm",
-        help="Skip LLM API calls (use stubs instead).",
-    ),
 ):
     """Initialize the MAGs-CodeDev workspace and project structure."""
     console.print(Panel("[bold cyan]Initializing MAGs-CodeDev Workspace...[/bold cyan]"))
@@ -143,10 +139,6 @@ def init(
     # 5. Interactive Setup (Manifest & AGENT.md)
     manifest_created = False
 
-    # Offline mode disables interactive AI
-    if offline:
-        interactive = False
-        console.print("[yellow]Offline mode: skipping interactive AI setup.[/yellow]")
 
     if interactive:
         config = load_config(config_path)
@@ -279,7 +271,7 @@ def init(
 
         manifest_created = manifest_path.exists()
 
-    # Define paths for manual creation (used in both interactive and offline modes)
+    # Define paths for manual creation (fallback)
     agent_md_path = Path(base_dir) / "AGENT.md"
     # 6. Fallback / Manual Creation
     if not agent_md_path.exists():

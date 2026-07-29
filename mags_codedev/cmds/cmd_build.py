@@ -4,6 +4,7 @@ import os
 import json
 import asyncio
 import shutil
+import fcntl
 import typer
 import git
 from typing import Optional
@@ -42,9 +43,8 @@ async def process_module(
     semaphore: asyncio.Semaphore,
     git_lock: asyncio.Lock,
     config_path: Path,
-    initial_error: str = None,
+    initial_error: str | None = None,
     force_fresh: bool = False,
-    offline: bool = False,
 ):
     """Handles the full lifecycle of a single module generation in isolation."""
     worktree_path = None
@@ -130,6 +130,7 @@ async def process_module(
             artifact_code = artifact_data.get("code") if artifact_data else ""
             artifact_tests = artifact_data.get("tests") if artifact_data else ""
             artifact_code_hash = artifact_data.get("code_hash") if artifact_data else None
+            artifact_test_hash = artifact_data.get("test_hash") if artifact_data else None
 
             if not existing_code and artifact_code:
                 existing_code = artifact_code
@@ -160,17 +161,27 @@ async def process_module(
             session_counter_file = os.path.join(
                 base_dir, "sessions", f"{func_hash}.session"
             )
-            session_dir = os.path.dirname(session_counter_file)
-            session_number = 1
-            if os.path.exists(session_counter_file):
-                with open(session_counter_file, "r") as f:
-                    try:
-                        session_number = int(f.read().strip()) + 1
-                    except ValueError:
-                        session_number = 1
+            session_dir = os.path.join(base_dir, "sessions")
             os.makedirs(session_dir, exist_ok=True)
-            with open(session_counter_file, "w") as f:
-                f.write(str(session_number))
+            session_number = 1
+            try:
+                with open(session_counter_file, "r+") as f:
+                    fcntl.flock(f, fcntl.LOCK_EX)
+                    try:
+                        content = f.read().strip()
+                        if content:
+                            try:
+                                session_number = int(content) + 1
+                            except ValueError:
+                                session_number = 1
+                        f.seek(0)
+                        f.truncate()
+                        f.write(str(session_number))
+                    finally:
+                        fcntl.flock(f, fcntl.LOCK_UN)
+            except FileNotFoundError:
+                with open(session_counter_file, "w") as f:
+                    f.write("1")
 
             if previous_iterations:
                 func_logger.info(
@@ -200,6 +211,7 @@ async def process_module(
                 "error_location": None,
 
                 "previous_code_hash": artifact_code_hash,
+                "previous_test_hash": artifact_test_hash,
                 "iteration_count": 1 if initial_error else 0,
                 "max_test_fix_iterations": max_test_fix_iterations,
                 "max_review_rounds": max_review_rounds,
@@ -215,7 +227,7 @@ async def process_module(
 
             # 3. Compile and Run the Graph
             status_dict[module_location]["status"] = "Running Multi-Agent Graph..."
-            graph = build_function_graph()
+            graph = graph_cache
 
             # Token tracking for this module
             token_counter = TokenCounter()
@@ -365,10 +377,6 @@ def build(
         False, "--force-fresh",
         help="Force a fresh build by deleting existing worktrees and branches.",
     ),
-    offline: bool = typer.Option(
-        False, "--offline", "--no-llm",
-        help="Skip LLM API calls (use stubs instead).",
-    ),
     verbose: int = typer.Option(
         0, "--verbose", "-v", count=True,
         help="Verbosity level (0=info, 1=debug, 2=trace).",
@@ -395,9 +403,6 @@ def build(
 
     logger.info(f"Using configuration: {config_path}")
     logger.info(f"Using manifest: {manifest_path}")
-    if offline:
-        console.print("[yellow]Offline mode: LLM API calls will be stubbed.[/yellow]")
-        logger.info("Build running in offline mode.")
 
     console.print(Panel("[bold magenta]Starting Multi-Agent Build Process...[/bold magenta]"))
 
@@ -408,7 +413,7 @@ def build(
         console.print(f"[bold red]Git Error:[/bold red] {e}")
         raise typer.Exit(1)
 
-    if not offline and not skip_validation:
+    if not skip_validation:
         from mags_codedev.utils.cli_common import validate_config_connections
         if not validate_config_connections(config_path):
             console.print("[bold red]Validation failed. Aborting build.[/bold red]")
@@ -456,6 +461,8 @@ def build(
 
     async def run_builds():
         failed_modules: set = set()
+        # Cache the graph to avoid rebuilding it for each module
+        graph_cache = build_function_graph()
 
         status_dict = {}
         for loc, spec in module_map.items():
@@ -479,6 +486,8 @@ def build(
         def done_count() -> int:
             """Count modules that are finished, failed, or blocked."""
             return len(built_modules) + len(failed_modules)
+        semaphore = asyncio.Semaphore(max_parallel)
+        git_lock = asyncio.Lock()
 
         while done_count() < len(module_map):
             # Refresh completed module status
@@ -545,8 +554,6 @@ def build(
                             )
                 raise typer.Exit(1)
 
-            semaphore = asyncio.Semaphore(max_parallel)
-            git_lock = asyncio.Lock()
 
             with Live(
                 generate_status_table(status_dict, module_map), refresh_per_second=4
@@ -560,7 +567,7 @@ def build(
                 build_tasks = [
                     process_module(
                         loc, spec, status_dict, semaphore, git_lock, config_path,
-                        force_fresh=force_fresh, offline=offline,
+                        force_fresh=force_fresh,
                     )
                     for loc, spec in buildable_now.items()
                 ]

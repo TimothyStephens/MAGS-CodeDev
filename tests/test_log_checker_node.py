@@ -9,7 +9,6 @@ class TestLogCheckerNode:
         state = sample_module_state
         state["test_results"] = "FAILED test_foo - AssertionError"
         state["lint_results"] = ""
-        state["offline"] = False
 
         mock_llm = MagicMock()
         mock_response = MagicMock()

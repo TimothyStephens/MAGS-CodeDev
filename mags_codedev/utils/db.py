@@ -77,10 +77,22 @@ def init_db(base_dir: str = ".mags-codedev") -> None:
                 spec_hash TEXT,
                 code_hash TEXT,
                 previous_code_hash TEXT,
+                test_hash TEXT,
+                previous_test_hash TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # Migrate: add test_hash, previous_code_hash, previous_test_hash columns
+        for col in ("test_hash", "previous_code_hash", "previous_test_hash"):
+            cursor.execute(
+                f"SELECT count(*) FROM pragma_table_info('module_artifacts') WHERE name = '{col}'",
+            )
+            if cursor.fetchone()[0] == 0:
+                cursor.execute(
+                    f"ALTER TABLE module_artifacts ADD COLUMN {col} TEXT",
+                )
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS iteration_log (
@@ -276,30 +288,33 @@ def save_artifact(
     """
     _ensure_dir(base_dir)
     code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
+    test_hash = hashlib.sha256(tests.encode("utf-8")).hexdigest()
 
     with sqlite3.connect(_db_path(base_dir), timeout=10) as conn:
         cursor = conn.cursor()
 
-        # Capture previous_code_hash before overwriting
+        # Capture previous hashes before overwriting
         cursor.execute(
-            "SELECT code_hash FROM module_artifacts WHERE location = ?",
+            "SELECT code_hash, test_hash FROM module_artifacts WHERE location = ?",
             (location,),
         )
         row = cursor.fetchone()
         previous_code_hash = row[0] if row else None
-
+        previous_test_hash = row[1] if row else None
         cursor.execute("""
             INSERT INTO module_artifacts
-                (location, code, tests, spec_hash, code_hash, previous_code_hash, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                (location, code, tests, spec_hash, code_hash, previous_code_hash, test_hash, previous_test_hash, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(location) DO UPDATE SET
                 code = excluded.code,
                 tests = excluded.tests,
                 spec_hash = excluded.spec_hash,
                 code_hash = excluded.code_hash,
                 previous_code_hash = excluded.previous_code_hash,
+                test_hash = excluded.test_hash,
+                previous_test_hash = excluded.previous_test_hash,
                 updated_at = CURRENT_TIMESTAMP
-        """, (location, code, tests, spec_hash, code_hash, previous_code_hash))
+        """, (location, code, tests, spec_hash, code_hash, previous_code_hash, test_hash, previous_test_hash))
 
         conn.commit()
 
@@ -310,13 +325,13 @@ def load_artifact(
 ) -> Optional[dict]:
     """Return persisted artifacts for *location*, or None if not found.
 
-    Returns a dict with keys: code, tests, spec_hash, code_hash.
+    Returns a dict with keys: code, tests, spec_hash, code_hash, test_hash.
     """
     _ensure_dir(base_dir)
     with sqlite3.connect(_db_path(base_dir), timeout=10) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT code, tests, spec_hash, code_hash FROM module_artifacts WHERE location = ?",
+            "SELECT code, tests, spec_hash, code_hash, test_hash FROM module_artifacts WHERE location = ?",
             (location,),
         )
         row = cursor.fetchone()
@@ -329,6 +344,7 @@ def load_artifact(
         "tests": row[1],
         "spec_hash": row[2],
         "code_hash": row[3],
+        "test_hash": row[4],
     }
 
 
@@ -494,3 +510,74 @@ class TokenCounter(BaseCallbackHandler):
         if in_tokens > 0 or out_tokens > 0:
             self._tokens["in"] += in_tokens
             self._tokens["out"] += out_tokens
+
+
+# ------------------------------------------------------------------ #
+#  Iteration Log (per-iteration audit trail)
+# ------------------------------------------------------------------ #
+
+def log_iteration(
+    location: str,
+    spec_hash: str,
+    iteration: int,
+    node: str,
+    action: str,
+    error_summary: str = "",
+    tokens_in: int = 0,
+    tokens_out: int = 0,
+    duration_ms: int = 0,
+    base_dir: str = ".mags-codedev",
+) -> None:
+    """Record a single iteration event for audit / debugging."""
+    _ensure_dir(base_dir)
+    with sqlite3.connect(_db_path(base_dir), timeout=10) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO iteration_log "
+            "(location, spec_hash, iteration, node, action, error_summary, "
+            "tokens_in, tokens_out, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (location, spec_hash, iteration, node, action, error_summary,
+             tokens_in, tokens_out, duration_ms),
+        )
+        conn.commit()
+
+
+# ------------------------------------------------------------------ #
+#  Completed Functions (status queries)
+# ------------------------------------------------------------------ #
+
+def get_completed_status(
+    base_dir: str = ".mags-codedev",
+) -> List[Tuple[str, str, str, str]]:
+    """Return all completed function records.
+
+    Returns: list of (func_hash, function_name, status, timestamp).
+    """
+    _ensure_dir(base_dir)
+    with sqlite3.connect(_db_path(base_dir), timeout=10) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT func_hash, function_name, status, timestamp "
+            "FROM completed_functions ORDER BY timestamp"
+        )
+        return cursor.fetchall()
+
+
+__all__ = [
+    "init_db",
+    "hash_spec",
+    "is_function_built",
+    "mark_function_built",
+    "add_iterations_to_module",
+    "get_total_iterations",
+    "log_token_usage",
+    "get_token_summary",
+    "save_artifact",
+    "load_artifact",
+    "load_dependency_codes",
+    "TokenLoggingCallbackHandler",
+    "TokenCounter",
+    "log_iteration",
+    "get_completed_status",
+]
+
