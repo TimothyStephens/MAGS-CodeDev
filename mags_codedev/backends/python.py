@@ -24,6 +24,10 @@ class PythonBackend:
 
     deps_filename: str = "requirements.txt"
 
+    def dockerfile_content(self) -> str:
+        """Extra Dockerfile lines: install the Python test/lint toolchain."""
+        return "RUN pip install --no-cache-dir pytest pytest-cov flake8 mypy bandit"
+
     # ── Local Runner ───────────────────────────────────────────────
 
     local_install_command: str = (

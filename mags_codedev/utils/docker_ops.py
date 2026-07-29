@@ -147,8 +147,8 @@ def _run_with_docker(state: ModuleState, command: str, config: dict, func_logger
         return f"ERROR: {runtime} execution failed: {e}"
 
 
-    """Runs a command inside an Apptainer/Singularity container."""
 def _run_with_apptainer(state: ModuleState, command: str, config: dict, func_logger: logging.Logger, backend=None) -> str:
+    """Runs a command inside an Apptainer/Singularity container, building the image if necessary."""
     # B12: Detect actual binary (apptainer or singularity)
     runtime_bin = "apptainer" if shutil.which("apptainer") else "singularity"
     runtime_name = runtime_bin  # For logging
@@ -214,12 +214,20 @@ def _run_with_apptainer(state: ModuleState, command: str, config: dict, func_log
         return f"ERROR: {runtime_name} execution failed: {e}"
 
 
-    """Runs a command in the local environment."""
 def _run_locally(state: ModuleState, command: str, config: dict, func_logger: logging.Logger, backend=None) -> str:
+    """Runs a command in the local (host) environment, no container isolation."""
     try:
         worktree_path = state["worktree_path"]
         # B14: Use backend env_vars for local runner too
         extra_env = backend.env_vars(worktree_path) if backend else {"PYTHONPATH": worktree_path}
+        # Install the language toolchain + project deps so the local runner
+        # honors the project requirements.txt (mirrors the container build).
+        if backend:
+            install_cmds = [backend.local_install_command]
+            req_file = Path(worktree_path) / backend.deps_filename
+            if req_file.exists():
+                install_cmds.append(backend.local_project_install_command)
+            command = " && ".join(install_cmds + [command])
         result = subprocess.run(
             ["/bin/bash", "-c", command],
             capture_output=True,

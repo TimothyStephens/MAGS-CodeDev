@@ -15,7 +15,7 @@ class TestLogCheckerNode:
         mock_response.content = '{"summary": "AssertionError in test_foo", "location": "SOURCE_CODE"}'
         mock_llm.invoke.return_value = mock_response
 
-        with patch("mags_codedev.agents.log_checker.get_llm", return_value=mock_llm):
+        with patch("mags_codedev.utils.llm_call.get_llm", return_value=mock_llm):
             result = log_checker_node(state)
 
         assert "test_error_summary" in result, "Should return test_error_summary key"
@@ -27,7 +27,7 @@ class TestLogCheckerNode:
         state["test_results"] = "===== 3 passed ====="
         state["lint_results"] = ""
 
-        with patch("mags_codedev.agents.log_checker.get_llm") as mock_get_llm:
+        with patch("mags_codedev.utils.llm_call.get_llm") as mock_get_llm:
             result = log_checker_node(state)
 
         mock_get_llm.assert_not_called()

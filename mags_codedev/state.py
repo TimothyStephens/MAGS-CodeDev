@@ -51,3 +51,4 @@ class ModuleState(TypedDict, total=False):
     dependency_code: Dict[str, str]   # Maps dep location -> source code
     project_instructions: str         # Project-level instructions from AGENT.md
     _next_reason: str                 # Routing reason for INFO logging
+    log_level: str                 # Configured log level: 'info'/'debug'/'trace' (controls per-module log detail)

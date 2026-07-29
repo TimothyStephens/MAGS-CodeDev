@@ -18,8 +18,9 @@ from mags_codedev.utils.db import (
     TokenLoggingCallbackHandler,
 )
 from mags_codedev.utils.config_parser import get_llm
-from mags_codedev.utils.cli_helpers import extract_content
+from mags_codedev.utils.llm_helpers import strip_markdown_code
 from mags_codedev.cmds.cmd_build import process_module
+from mags_codedev.graph import build_function_graph
 from mags_codedev.utils.cli_common import (
     resolve_base_dir,
     find_default_config_path,
@@ -167,9 +168,13 @@ def debug(
             sem = asyncio.Semaphore(1)
             lock = asyncio.Lock()
             console.print("[yellow]Running fix workflow with provided error...[/yellow]")
+            # Compile the graph once and pass it in (process_module does not build it).
+            graph = build_function_graph()
             await process_module(
                 module_location, spec, status, sem, lock, config_path,
                 initial_error=error_to_fix,
+                graph=graph,
+                log_level=log_level,
             )
         asyncio.run(run_fix(error_msg))
 
@@ -196,7 +201,7 @@ def debug(
         response = chain.invoke({"input": error_msg})
 
         console.print(
-            Panel(extract_content(response.content), title="Debug Analysis", border_style="green")
+            Panel(strip_markdown_code(response.content), title="Debug Analysis", border_style="green")
         )
 
 

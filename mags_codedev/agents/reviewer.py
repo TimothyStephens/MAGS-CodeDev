@@ -6,6 +6,13 @@ from langchain_core.prompts import ChatPromptTemplate
 from mags_codedev.state import ModuleState
 from mags_codedev.utils.config_parser import get_reviewer_llms
 from mags_codedev.utils.logger import get_dual_loggers, logger
+from mags_codedev.utils.retry import ainvoke_with_retry
+from mags_codedev.utils.llm_call import build_context_blocks
+# Sentinel returned by ``_get_review`` when a reviewer's API call failed.
+# Deliberately contains no "LGTM" so a skipped reviewer is never counted as an
+# approval vote (see the quorum logic in ``multi_llm_review_node``).
+_REVIEW_SKIPPED = "__REVIEW_SKIPPED__"
+
 
 async def _get_review(llm, state: ModuleState) -> str:
     """Helper function to execute a single review asynchronously with retry logic."""
@@ -20,30 +27,8 @@ async def _get_review(llm, state: ModuleState) -> str:
         "If the code is perfect, reply EXACTLY with 'LGTM'.\n"
         "If there are issues, list them clearly with specific line references."
     )
-    # Build project instructions block
-    project_instructions = state.get("project_instructions", "")
-    project_instructions_block = ""
-    if project_instructions:
-        project_instructions_block = (
-            "PROJECT INSTRUCTIONS\n"
-            "These are project-wide guidelines and conventions.\n\n"
-            + project_instructions + "\n\n"
-        )
-
-    # Build dependency context block
-    dep_code = state.get("dependency_code", {})
-    dependency_context = ""
-    if dep_code:
-        dep_parts = []
-        for loc, source in dep_code.items():
-            dep_parts.append(f"--- File: {loc} ---\n```python\n{source.replace('{', '{{').replace('}', '}}')}\n```")
-        dependency_context = (
-            "DEPENDENCY CONTEXT\n"
-            "These are the source files this module depends on.\n"
-            "Verify the code correctly imports from and uses these dependencies.\n\n"
-            + "\n\n".join(dep_parts) + "\n\n"
-        )
-
+    # Shared context blocks (project instructions + dependency source).
+    project_instructions_block, dependency_context = build_context_blocks(state)
     human_template = project_instructions_block + dependency_context + "Spec: {spec}\nCode:\n{code}"
 
     prompt = ChatPromptTemplate.from_messages([
@@ -67,7 +52,7 @@ async def _get_review(llm, state: ModuleState) -> str:
     )
     try:
         chain = prompt | llm
-        response = await chain.ainvoke({
+        response = await ainvoke_with_retry(chain, {
             "spec": str(state['spec']),
             "code": state['code']
         })
@@ -123,7 +108,7 @@ async def _get_review(llm, state: ModuleState) -> str:
             f"Reviewer ({model_name}) API call failed: {e}. "
             f"Skipping this reviewer."
         )
-        content = f"LGTM (reviewer skipped due to API error: {type(e).__name__})"
+        content = f"{_REVIEW_SKIPPED} ({type(e).__name__})"
     return str(content)
 
 
@@ -136,43 +121,62 @@ async def multi_llm_review_node(state: ModuleState) -> dict:
     tasks = [_get_review(llm, state) for llm in llms]
     reviews = await asyncio.gather(*tasks)
 
-    # FIX Bug #2: Check if ALL reviewers failed
-    failed_reviews = [r for r in reviews if "reviewer skipped due to api error" in r.lower()]
+    # A skipped reviewer (API failure) is NEUTRAL — neither an approval nor
+    # actionable feedback. Approval requires a strict majority of ALL
+    # configured reviewers to reply LGTM, so a partial outage can never grant
+    # a 1-of-N approval. Bounded by max_review_rounds in the graph.
+    skipped = [r for r in reviews if r.startswith(_REVIEW_SKIPPED)]
+    successful = [r for r in reviews if not r.startswith(_REVIEW_SKIPPED)]
 
-    if len(failed_reviews) == len(llms) and len(llms) > 0:
-        # All reviewers failed — don't approve silently
-        func_logger, resp_logger = get_dual_loggers(state.get("log_filepath"))
-        func_logger.warning("All reviewer LLM calls failed. Code not approved.")
+    func_logger, _ = get_dual_loggers(state.get("log_filepath"))
+    reason = state.get("_next_reason", "")
+    if reason:
+        func_logger.info(f"[Reason] {reason}")
 
-        reason = state.get("_next_reason", "")
-        if reason:
-            func_logger.info(f"[Reason] {reason}")
-        current_rounds = state.get("review_round_count", 0)
+    current_rounds = state.get("review_round_count", 0)
+
+    # All reviewers failed: surface a clear retry signal.
+    if llms and not successful:
+        func_logger.warning(
+            "All reviewer LLM calls failed. Code not approved. "
+            "(%d/%d skipped)", len(skipped), len(llms),
+        )
         return {
             "review_comments": ["All reviewers failed — please retry the build."],
             "status": "in_progress",
             "review_round_count": current_rounds + 1,
         }
 
-    func_logger, resp_logger = get_dual_loggers(state.get("log_filepath"))
-
-    reason = state.get("_next_reason", "")
-    if reason:
-        func_logger.info(f"[Reason] {reason}")
-
-    # B16: Use word boundary regex — "Not LGTM" should NOT be treated as approval
-    actionable_comments = [r for r in reviews if not re.search(r"\bLGTM\b", r, re.IGNORECASE)]
-    status = "success" if not actionable_comments else "in_progress"
-
-    current_rounds = state.get("review_round_count", 0)
+    # Actionable comments come only from reviewers that actually responded.
+    actionable_comments = [
+        r for r in successful if not re.search(r"\bLGTM\b", r, re.IGNORECASE)
+    ]
     if actionable_comments:
         return {
             "review_comments": actionable_comments,
-            "status": status,
+            "status": "in_progress",
             "review_round_count": current_rounds + 1,
         }
 
+    # No actionable comments: count LGTM votes. A strict majority of ALL
+    # configured reviewers must approve; otherwise too many were skipped
+    # (quorum unmet) and we ask for another round.
+    approvals = [r for r in successful if re.search(r"\bLGTM\b", r, re.IGNORECASE)]
+    if len(approvals) * 2 > len(llms):
+        return {
+            "review_comments": [],
+            "status": "success",
+        }
+
+    func_logger.warning(
+        "Reviewer quorum unmet: %d/%d approved (%d skipped).",
+        len(approvals), len(llms), len(skipped),
+    )
     return {
-        "review_comments": actionable_comments,
-        "status": status,
+        "review_comments": [
+            f"Insufficient reviewer quorum: {len(approvals)}/{len(llms)} "
+            f"approved ({len(skipped)} skipped). Please retry."
+        ],
+        "status": "in_progress",
+        "review_round_count": current_rounds + 1,
     }

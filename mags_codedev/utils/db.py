@@ -8,6 +8,7 @@ parameter; the database lives at `os.path.join(base_dir, "cache.db")`.
 """
 
 import hashlib
+import json
 import os
 import sqlite3
 from typing import Dict, List, Tuple, Optional
@@ -47,6 +48,7 @@ def init_db(base_dir: str = ".mags-codedev") -> None:
                 func_hash TEXT PRIMARY KEY,
                 function_name TEXT,
                 status TEXT DEFAULT 'success',
+                spec_content_hash TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -94,6 +96,17 @@ def init_db(base_dir: str = ".mags-codedev") -> None:
                     f"ALTER TABLE module_artifacts ADD COLUMN {col} TEXT",
                 )
 
+        # Migrate: add spec_content_hash to completed_functions so spec edits
+        # (description / dependency changes) invalidate a previously-built task.
+        cursor.execute(
+            "SELECT count(*) FROM pragma_table_info('completed_functions') "
+            "WHERE name = 'spec_content_hash'"
+        )
+        if cursor.fetchone()[0] == 0:
+            cursor.execute(
+                "ALTER TABLE completed_functions ADD COLUMN spec_content_hash TEXT"
+            )
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS iteration_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,16 +144,45 @@ def hash_spec(spec: dict) -> str:
     return hashlib.sha256(spec.get("location", "").encode("utf-8")).hexdigest()
 
 
+def hash_spec_content(spec: dict) -> str:
+    """Return a SHA-256 of the spec's description + sorted dependencies.
+
+    Complementary to :func:`hash_spec` (which is location-based and keys logs,
+    worktrees, and artifacts for continuity). The content hash lets
+    :func:`is_function_built` detect that a manifest description/dependency was
+    edited since the last successful build, so a plain ``build`` rebuilds it.
+    """
+    payload = {
+        "description": spec.get("description", ""),
+        "dependencies": sorted(spec.get("dependencies", [])),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
 def is_function_built(spec: dict, base_dir: str = ".mags-codedev") -> bool:
-    """Check whether the function described by *spec* was already built."""
+    """Check whether *spec* was built AND its spec content is unchanged.
+
+    A task is considered built only if a completed_functions row exists for its
+    location hash AND the stored spec-content hash matches the current spec.
+    Editing the description or dependencies invalidates the task so it rebuilds.
+    """
     _ensure_dir(base_dir)
-    spec_hash = hash_spec(spec)
+    func_hash = hash_spec(spec)
+    content_hash = hash_spec_content(spec)
     with sqlite3.connect(_db_path(base_dir), timeout=10) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT 1 FROM completed_functions WHERE func_hash = ?", (spec_hash,)
+            "SELECT spec_content_hash FROM completed_functions WHERE func_hash = ?",
+            (func_hash,),
         )
-        return cursor.fetchone() is not None
+        row = cursor.fetchone()
+        if row is None:
+            return False
+        stored = row[0]
+        # NULL (pre-migration row): rebuild once to populate the content hash.
+        return stored is not None and stored == content_hash
 
 
 def mark_function_built(
@@ -159,9 +201,13 @@ def mark_function_built(
     with sqlite3.connect(_db_path(base_dir), timeout=10) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO completed_functions (func_hash, function_name, status) VALUES (?, ?, ?) "
-            "ON CONFLICT(func_hash) DO UPDATE SET status=excluded.status, function_name=excluded.function_name",
-            (spec_hash, function_name, status),
+            "INSERT INTO completed_functions "
+            "(func_hash, function_name, status, spec_content_hash) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(func_hash) DO UPDATE SET "
+            "status=excluded.status, function_name=excluded.function_name, "
+            "spec_content_hash=excluded.spec_content_hash",
+            (spec_hash, function_name, status, hash_spec_content(spec)),
         )
         conn.commit()
 

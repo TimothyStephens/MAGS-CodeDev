@@ -1,18 +1,9 @@
-"""CLI helper utilities: content extraction, error formatting, editor."""
+"""CLI helper utilities: error formatting, editor."""
 
 import os
 import subprocess
-import re
 from typing import Optional
 
-
-def extract_content(content: str) -> str:
-    """Extract content from LLM response, stripping markdown code fences if present."""
-    # If the content is wrapped in triple backticks, extract the inner content
-    match = re.search(r"```(?:\w*)\n?(.*?)\n?```", content, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    return content.strip()
 
 
 def format_llm_error(error: Exception) -> str:
@@ -47,7 +38,7 @@ def _open_in_editor(path: str) -> Optional[str]:
     if not editor:
         return None
 
-    if editor == "code" and "--wait" not in editor:
+    if editor == "code":
         # VS Code needs --wait to block
         subprocess.run(["code", "--wait", path])
     else:

@@ -9,7 +9,8 @@ from rich.console import Console
 from mags_codedev.utils.logger import setup_logger, logger
 from mags_codedev.utils.config_parser import get_llm
 from mags_codedev.utils.db import TokenLoggingCallbackHandler
-from mags_codedev.utils.cli_helpers import extract_content, format_llm_error
+from mags_codedev.utils.llm_helpers import strip_markdown_code
+from mags_codedev.utils.cli_helpers import format_llm_error
 from mags_codedev.utils.cli_common import (
     resolve_base_dir,
     find_default_config_path,
@@ -74,7 +75,7 @@ def chat(
                 )
 
             last_message = response["messages"][-1]
-            final_answer = extract_content(last_message.content)
+            final_answer = strip_markdown_code(last_message.content)
 
             logger.debug(f"Chat Final Answer: {final_answer}")
             console.print(f"\n[blue]Agent>[/blue] {final_answer}\n")

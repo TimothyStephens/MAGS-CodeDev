@@ -28,7 +28,7 @@ class TestCoderNode:
             resp.content = "def foo(x): return x or []"
             return resp
 
-        with patch("mags_codedev.agents.coder.invoke_with_retry", side_effect=capture_invoke):
+        with patch("mags_codedev.utils.llm_call.invoke_with_retry", side_effect=capture_invoke):
             coder_node(state)
 
         feedback = captured_inputs.get("feedback", "")
@@ -51,7 +51,7 @@ class TestCoderNode:
             resp.content = "def foo(): return 42"
             return resp
 
-        with patch("mags_codedev.agents.coder.invoke_with_retry", side_effect=capture_invoke):
+        with patch("mags_codedev.utils.llm_call.invoke_with_retry", side_effect=capture_invoke):
             coder_node(state)
 
         feedback = captured_inputs.get("feedback", "")
@@ -70,10 +70,22 @@ class TestCoderNode:
             resp.content = "def foo(): return 42"
             return resp
 
-        with patch("mags_codedev.agents.coder.invoke_with_retry", side_effect=capture_invoke):
+        with patch("mags_codedev.utils.llm_call.invoke_with_retry", side_effect=capture_invoke):
             coder_node(state)
 
         narrative = captured_inputs.get("prompt_narrative", "")
         assert "Fix the following" not in narrative, \
             f"First run should not be in fix mode: {narrative}"
+
+    def test_llm_failure_raises_not_stub(self, sample_module_state):
+        """P1-1: an exhausted LLM call must raise, not synthesize a stub pass()."""
+        state = sample_module_state
+        state["iteration_count"] = 0
+
+        def failing_invoke(chain, inputs):
+            raise RuntimeError("API key invalid")
+
+        with patch("mags_codedev.utils.llm_call.invoke_with_retry", side_effect=failing_invoke):
+            with pytest.raises(RuntimeError, match="API key invalid"):
+                coder_node(state)
 

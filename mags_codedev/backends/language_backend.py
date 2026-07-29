@@ -42,6 +42,15 @@ class LanguageBackend(Protocol):
         """Canonical dependency file name, e.g. 'requirements.txt'."""
         ...
 
+    @abstractmethod
+    def dockerfile_content(self) -> str:
+        """Extra Dockerfile lines for the language toolchain (test/lint deps).
+
+        Appended after the base image and project-dependency install in the
+        generated Dockerfile. Return an empty string for no extras.
+        """
+        ...
+
     # ── Local Runner ───────────────────────────────────────────────
 
     @property

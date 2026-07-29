@@ -191,105 +191,154 @@ def get_log_level(config_path: Path = Path("config.yaml")) -> str:
     return config.get("settings", {}).get("log_level", "info")
 
 
+# ------------------------------------------------------------------ #
+#  Provider Registry
+# ------------------------------------------------------------------ #
+# Each entry is a factory ``(model_config, api_keys, model_name) -> llm``.
+# To add a new provider: write a factory and register it here — no if/elif
+# chain to edit. Factories reference the module-level client class (with an
+# optional-import guard) so test patches like ``config_parser.ChatOllama =``
+# continue to intercept the call.
+
+def _make_openai(model_config: dict, api_keys: dict, model_name: str):
+    """OpenAI ChatCompletion."""
+    return ChatOpenAI(
+        api_key=api_keys.get("openai") or os.environ.get("OPENAI_API_KEY"),
+        model=model_name,
+        base_url=model_config.get("base_url") or os.environ.get("OPENAI_BASE_URL"),
+    )
+
+
+def _make_anthropic(model_config: dict, api_keys: dict, model_name: str):
+    return ChatAnthropic(
+        api_key=api_keys.get("anthropic") or os.environ.get("ANTHROPIC_API_KEY"),
+        model=model_name,
+        base_url=model_config.get("base_url") or os.environ.get("ANTHROPIC_BASE_URL"),
+    )
+
+
+def _make_google(model_config: dict, api_keys: dict, model_name: str):
+    return ChatGoogleGenerativeAI(
+        google_api_key=api_keys.get("gemini") or os.environ.get("GOOGLE_API_KEY"),
+        model=model_name,
+    )
+
+
+def _make_mistral(model_config: dict, api_keys: dict, model_name: str):
+    if ChatMistralAI is None:
+        raise ImportError(
+            "Mistral provider requires 'langchain-mistralai'. "
+            "Install it with `pip install langchain-mistralai`."
+        )
+    return ChatMistralAI(
+        api_key=api_keys.get("mistral") or os.environ.get("MISTRAL_API_KEY"),
+        model=model_name,
+    )
+
+
+def _make_cohere(model_config: dict, api_keys: dict, model_name: str):
+    if ChatCohere is None:
+        raise ImportError(
+            "Cohere provider requires 'langchain-cohere'. "
+            "Install it with `pip install langchain-cohere`."
+        )
+    return ChatCohere(
+        api_key=api_keys.get("cohere") or os.environ.get("COHERE_API_KEY"),
+        model=model_name,
+    )
+
+
+def _make_ollama(model_config: dict, api_keys: dict, model_name: str):
+    if ChatOllama is None:
+        raise ImportError(
+            "Ollama provider requires 'langchain-ollama'. "
+            "Install it with `pip install langchain-ollama`."
+        )
+    return ChatOllama(
+        model=model_name,
+        base_url=(
+            model_config.get("base_url")
+            or os.environ.get("OLLAMA_BASE_URL")
+            or "http://localhost:11434"
+        ),
+        num_ctx=model_config.get("num_ctx", 8192),
+    )
+
+
+def _make_local(model_config: dict, api_keys: dict, model_name: str):
+    """Any OpenAI-compatible server (vLLM, LM Studio, Ollama /v1)."""
+    base_url = (
+        model_config.get("base_url")
+        or os.environ.get("OPENAI_BASE_URL")
+        or os.environ.get("OLLAMA_BASE_URL")
+    )
+    if not base_url:
+        logger.warning(
+            "Provider '%s' has no base_url configured. "
+            "Set 'base_url' in config or OPENAI_BASE_URL/OLLAMA_BASE_URL env var.",
+            model_config.get("provider", "local"),
+        )
+        base_url = "http://localhost:11434/v1"
+        logger.info("Falling back to default: %s", base_url)
+    api_key = (
+        model_config.get("api_key")
+        or api_keys.get("ollama")
+        or api_keys.get("openai")
+        or os.environ.get("OLLAMA_API_KEY")
+        or os.environ.get("OPENAI_API_KEY")
+        or "dummy"
+    )
+    return ChatOpenAI(
+        api_key=api_key,
+        base_url=base_url,
+        model=model_name,
+    )
+
+
+# Registry: provider name -> factory. Add a new provider by appending here.
+_PROVIDERS = {
+    "openai": _make_openai,
+    "anthropic": _make_anthropic,
+    "google": _make_google,
+    "mistral": _make_mistral,
+    "cohere": _make_cohere,
+    "ollama": _make_ollama,
+    "local": _make_local,
+    "custom_openai": _make_local,  # legacy alias
+}
+
+
 def _create_llm_instance(
     model_config: dict, api_keys: dict,
     role: Optional[str] = None,
     base_dir: str = ".mags-codedev",
 ):
+    """Instantiate a LangChain chat model from a provider config entry.
+
+    The provider is looked up in :data:`_PROVIDERS`; adding a new provider means
+    writing a factory and registering it — no ``if/elif`` chain to edit. A
+    :class:`TokenLoggingCallbackHandler` is attached automatically when *role*
+    is given so token usage is persisted to the DB.
+    """
     provider = model_config.get("provider", "openai").lower()
     model_name = model_config.get("model", "gpt-4o")
 
-    llm = None
-    if provider == "openai":
-        llm = ChatOpenAI(
-            api_key=api_keys.get("openai") or os.environ.get("OPENAI_API_KEY"),
-            model=model_name,
-            base_url=model_config.get("base_url") or os.environ.get("OPENAI_BASE_URL"),
-        )
-    elif provider == "anthropic":
-        llm = ChatAnthropic(
-            api_key=api_keys.get("anthropic") or os.environ.get("ANTHROPIC_API_KEY"),
-            model=model_name,
-            base_url=model_config.get("base_url") or os.environ.get("ANTHROPIC_BASE_URL"),
-        )
-    elif provider == "google":
-        llm = ChatGoogleGenerativeAI(
-            google_api_key=api_keys.get("gemini") or os.environ.get("GOOGLE_API_KEY"),
-            model=model_name,
-        )
-    elif provider == "mistral":
-        if ChatMistralAI is None:
-            raise ImportError(
-                "Mistral provider requires 'langchain-mistralai'. "
-                "Please install it with `pip install langchain-mistralai`."
-            )
-        llm = ChatMistralAI(
-            api_key=api_keys.get("mistral") or os.environ.get("MISTRAL_API_KEY"),
-            model=model_name,
-        )
-    elif provider == "cohere":
-        if ChatCohere is None:
-            raise ImportError(
-                "Cohere provider requires 'langchain-cohere'. "
-                "Please install it with `pip install langchain-cohere`."
-            )
-        llm = ChatCohere(
-            api_key=api_keys.get("cohere") or os.environ.get("COHERE_API_KEY"),
-            model=model_name,
-        )
-    elif provider == "ollama":
-        if ChatOllama is None:
-            raise ImportError(
-                "Ollama provider requires 'langchain-ollama'. "
-                "Please install it with `pip install langchain-ollama`."
-            )
-        llm = ChatOllama(
-            model=model_name,
-            base_url=model_config.get(
-                "base_url"
-            ) or os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434",
-            num_ctx=model_config.get("num_ctx", 8192),
-        )
-    elif provider in ("custom_openai", "local"):
-        # For local OpenAI-compatible servers (Ollama, vLLM, LM Studio)
-        base_url = (
-            model_config.get("base_url")
-            or os.environ.get("OPENAI_BASE_URL")
-            or os.environ.get("OLLAMA_BASE_URL")
-        )
-        if not base_url:
-            logger.warning(
-                "Provider '%s' has no base_url configured. "
-                "Set 'base_url' in config or OPENAI_BASE_URL/OLLAMA_BASE_URL env var.",
-                provider,
-            )
-            base_url = "http://localhost:11434/v1"
-            logger.info("Falling back to default: %s", base_url)
-        api_key = (
-            model_config.get("api_key")
-            or api_keys.get("ollama")
-            or api_keys.get("openai")
-            or os.environ.get("OLLAMA_API_KEY")
-            or os.environ.get("OPENAI_API_KEY")
-            or "dummy"
-        )
-        llm = ChatOpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            model=model_name,
-        )
-    else:
+    factory = _PROVIDERS.get(provider)
+    if factory is None:
         raise ValueError(
             f"Unsupported provider: '{provider}'. "
-            f"Supported: openai, anthropic, google, mistral, cohere, "
-            f"ollama, local, custom_openai."
+            f"Supported: {', '.join(sorted(_PROVIDERS))}."
         )
 
+    llm = factory(model_config, api_keys, model_name)
+
     if role and llm:
-        # Attach the token logging callback automatically (append, don't overwrite)
+        # Attach the token logging callback (append, don't overwrite).
         if llm.callbacks is None:
             llm.callbacks = []
-        llm.callbacks.append(TokenLoggingCallbackHandler(role=role, model_name=model_name, base_dir=base_dir))
+        llm.callbacks.append(
+            TokenLoggingCallbackHandler(role=role, model_name=model_name, base_dir=base_dir)
+        )
 
     return llm
 

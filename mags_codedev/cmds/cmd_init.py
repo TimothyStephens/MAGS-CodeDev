@@ -15,7 +15,7 @@ from mags_codedev.utils.config_parser import load_config, get_llm, get_log_level
 from mags_codedev.utils.db import init_db, TokenLoggingCallbackHandler
 from mags_codedev.utils.git_ops import ensure_git_repo
 from mags_codedev.backends import get_backend
-from mags_codedev.utils.cli_helpers import extract_content
+from mags_codedev.utils.llm_helpers import strip_markdown_code
 from mags_codedev.utils.cli_common import (
     resolve_base_dir,
     _bootstrap_config,
@@ -256,7 +256,7 @@ def init(
                             {"messages": [("user", user_input)]}, config=graph_config
                         )
                     last_message = response["messages"][-1]
-                    final_answer = extract_content(last_message.content)
+                    final_answer = strip_markdown_code(last_message.content)
                     logger.debug(f"Architect Final Answer: {final_answer}")
                     console.print(f"\n[blue]Architect>[/blue] {final_answer}\n")
 

@@ -7,7 +7,7 @@ import shutil
 import fcntl
 import typer
 import git
-from typing import Optional
+from typing import Any, Optional
 from pathlib import Path
 
 from rich.console import Console
@@ -43,14 +43,20 @@ async def process_module(
     semaphore: asyncio.Semaphore,
     git_lock: asyncio.Lock,
     config_path: Path,
+    graph: Any,
     initial_error: str | None = None,
     force_fresh: bool = False,
+    log_level: str = "info",
 ):
     """Handles the full lifecycle of a single module generation in isolation."""
     worktree_path = None
     branch_name = f"feature/{module_location}"
     func_logger = None
     log_filepath = None
+    # Pre-initialized so the failure handler can reference them even when an
+    # exception happens before the graph starts running.
+    final_state: dict | None = None
+    token_counter: TokenCounter | None = None
 
     try:
         func_hash = hash_spec(spec)
@@ -223,11 +229,11 @@ async def process_module(
                 # Session tracking (lifecycle logging)
                 "_previous_iterations": previous_iterations or 0,
                 "_session_number": session_number,
+                "log_level": log_level,
             }
 
-            # 3. Compile and Run the Graph
+            # 3. Run the Graph (compiled once in run_builds() and passed in)
             status_dict[module_location]["status"] = "Running Multi-Agent Graph..."
-            graph = graph_cache
 
             # Token tracking for this module
             token_counter = TokenCounter()
@@ -349,12 +355,89 @@ async def process_module(
         logger.error(f"Error processing {module_location} (see {log_filepath}): {e}")
         status_dict[module_location]["status"] = f"Error: {str(e)}"
 
+        # Persist any partial artifacts so the failed task's last good code is
+        # inspectable, then clean up the worktree. final_state is set only once
+        # the graph starts running, which also implies func_hash/base_dir exist.
+        if final_state is not None:
+            if final_state.get("code") or final_state.get("tests"):
+                try:
+                    await asyncio.to_thread(
+                        save_artifact,
+                        location=module_location,
+                        code=final_state.get("code", ""),
+                        tests=final_state.get("tests", ""),
+                        spec_hash=func_hash,
+                        base_dir=base_dir,
+                    )
+                except Exception:
+                    effective_logger.warning("Could not save partial artifacts after failure.")
+            if token_counter is not None:
+                tokens = token_counter.total
+                status_dict[module_location]["tokens_in"] = tokens["in"]
+                status_dict[module_location]["tokens_out"] = tokens["out"]
+
         if worktree_path:
             async with git_lock:
                 await asyncio.to_thread(
                     merge_and_cleanup_worktree,
                     branch_name, worktree_path, False, base_dir=resolve_base_dir(config_path)
                 )
+
+
+def _run_single_module(target, spec, module_map, config_path, base_dir, log_level: str = "info"):
+    """Force-rebuild a single module via the graph with a live status tree.
+
+    Used by ``build --module <location>`` to rerun one task after a manual fix
+    or a spec edit, bypassing the DAG wave scheduler. ``force_fresh=True``
+    discards the previous worktree so the rerun starts clean (the artifact DB
+    still seeds the coder with the last good code).
+    """
+    artifact_data = load_artifact(target, base_dir=base_dir)
+    status_dict = {
+        target: {
+            "status": "Pending",
+            "iterations": 0,
+            "hash": hash_spec(spec),
+            "step": "-",
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "has_artifact": artifact_data is not None,
+            "artifact_hash": artifact_data.get("code_hash", "") if artifact_data else "",
+        }
+    }
+    console.print(Panel(f"[bold magenta]Rebuilding module '{target}'...[/bold magenta]"))
+    graph = build_function_graph()
+    semaphore = asyncio.Semaphore(1)
+    git_lock = asyncio.Lock()
+
+    async def _run():
+        with Live(
+            generate_status_table(status_dict, module_map), refresh_per_second=4
+        ) as live:
+            async def _update_ui():
+                while True:
+                    live.update(
+                        generate_status_table(dict(sorted(status_dict.items())), module_map)
+                    )
+                    await asyncio.sleep(0.25)
+
+            ui_task = asyncio.create_task(_update_ui())
+            await process_module(
+                target, spec, status_dict, semaphore, git_lock, config_path,
+                force_fresh=True, graph=graph, log_level=log_level,
+            )
+            ui_task.cancel()
+            live.update(generate_status_table(status_dict, module_map))
+
+    asyncio.run(_run())
+
+    info = status_dict[target]
+    if "Success" in info["status"]:
+        console.print(f"[green]✓ {target}: {info['status']}[/green]")
+    else:
+        console.print(f"[red]✗ {target}: {info['status']}[/red]")
+        console.print(f"  Log: [blue]{info.get('log_file', '')}[/blue]")
+        raise typer.Exit(1)
 
 
 def build(
@@ -380,6 +463,10 @@ def build(
     verbose: int = typer.Option(
         0, "--verbose", "-v", count=True,
         help="Verbosity level (0=info, 1=debug, 2=trace).",
+    ),
+    module: Optional[str] = typer.Option(
+        None, "--module",
+        help="Build only this module (by location). Forces a rebuild even if already built.",
     ),
 ):
     """Build all pending modules in the manifest using parallel multi-agent LangGraphs."""
@@ -440,6 +527,18 @@ def build(
     module_map = {
         spec['location']: spec for spec in manifest if 'location' in spec
     }
+
+    # Per-task rerun: build exactly one module, forcing a rebuild regardless of
+    # cache. Used after editing a spec or manually fixing a failure.
+    if module is not None:
+        if module not in module_map:
+            console.print(
+                f"[red]Module '{module}' not found in manifest. "
+                f"Available: {', '.join(sorted(module_map)) or 'none'}[/red]"
+            )
+            raise typer.Exit(1)
+        _run_single_module(module, module_map[module], module_map, config_path, base_dir, log_level=log_level)
+        return
     built_modules = (
         set()
         if force_fresh
@@ -568,6 +667,8 @@ def build(
                     process_module(
                         loc, spec, status_dict, semaphore, git_lock, config_path,
                         force_fresh=force_fresh,
+                        graph=graph_cache,
+                        log_level=log_level,
                     )
                     for loc, spec in buildable_now.items()
                 ]
