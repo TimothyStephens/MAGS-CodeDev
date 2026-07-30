@@ -184,22 +184,22 @@ create_session() {
 
     # Resize left column
     tmux resize-pane -t "${name}:0.0" -x "${col_left}"
-    # Resize middle column (both panes)
+    # Resize middle column (panes 1, 2)
     tmux resize-pane -t "${name}:0.1" -x "${col_mid}"
-    tmux resize-pane -t "${name}:0.4" -x "${col_mid}"
-    # Resize right column (both panes)
-    tmux resize-pane -t "${name}:0.2" -x "${col_right}"
+    tmux resize-pane -t "${name}:0.2" -x "${col_mid}"
+    # Resize right column (panes 3, 4)
     tmux resize-pane -t "${name}:0.3" -x "${col_right}"
+    tmux resize-pane -t "${name}:0.4" -x "${col_right}"
 
     # ── Start programs ─────────────────────────────────────────────────
     # Pane 1: Shell 1 (top-middle)
     tmux send-keys -t "${name}:0.1" "cd ${project_dir}" Enter
-    # Pane 4: Shell 2 (bottom-middle)
-    tmux send-keys -t "${name}:0.4" "cd ${project_dir}" Enter
-    # Pane 2: btop (top-right)
-    tmux send-keys -t "${name}:0.2" "btop 2>/dev/null || htop" Enter
-    # Pane 3: Monitor (bottom-right)
-    tmux send-keys -t "${name}:0.3" \
+    # Pane 2: Shell 2 (bottom-middle)
+    tmux send-keys -t "${name}:0.2" "cd ${project_dir}" Enter
+    # Pane 3: btop (top-right)
+    tmux send-keys -t "${name}:0.3" "btop 2>/dev/null || htop" Enter
+    # Pane 4: Monitor (bottom-right)
+    tmux send-keys -t "${name}:0.4" \
         "watch -n ${MONITOR_INTERVAL} -t 'echo \"=== Git ===\"; git -C ${project_dir} status --short 2>/dev/null || echo \"no repo\"; echo; echo \"=== Podman ===\"; podman ps --format \"{{.Names}} {{.Status}}\" 2>/dev/null | head -5; echo; echo \"=== Disk ===\"; df -h / | tail -1'" \
         Enter
 
