@@ -23,15 +23,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Apptainer (via APT repo to avoid CloudFront TLS issues) ──────
-RUN curl --http1.1 --retry 3 --retry-delay 2 -fsSL \
-        'https://pkgs.apptainer.io/gpg' | gpg --dearmor -o /usr/share/keyrings/apptainer.gpg \
-    && echo "deb [signed-by=/usr/share/keyrings/apptainer.gpg] https://pkgs.apptainer.io/stable/$$(. /etc/os-release && echo $${VERSION_ID})/$$(cat /etc/os-release | grep ^ID= | cut -d= -f2) main" \
-        > /etc/apt/sources.list.d/apptainer.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends apptainer \
-    && rm -rf /var/lib/apt/lists/*
-
 # fd is installed as fdfind on Debian — symlink to fd for pi-nvim-bridge
 RUN ln -sf /usr/bin/fdfind /usr/bin/fd
 
