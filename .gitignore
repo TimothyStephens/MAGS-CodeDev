@@ -221,6 +221,7 @@ config.yaml
 .worktree_*/
 Dockerfile.mags-codedev
 *.sif.def
+tests/stress_test
 
 # Node.js
 node_modules/
