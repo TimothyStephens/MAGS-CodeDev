@@ -127,9 +127,9 @@ create_session() {
     done
 
     # OMP config mount
-    local omp_flag=""
+    local omp_flag="-v ${project_dir}:/workspace:z"
     if [ -d "$HOME/.omp" ]; then
-        omp_flag="-v $(realpath "$HOME/.omp"):/root/.omp:z"
+        omp_flag="${omp_flag} -v $(realpath "$HOME/.omp"):/root/.omp:z"
     fi
 
     echo ""
@@ -200,7 +200,7 @@ create_session() {
     tmux send-keys -t "${name}:0.3" "btop 2>/dev/null || htop" Enter
     # Pane 4: Monitor (bottom-right)
     tmux send-keys -t "${name}:0.4" \
-        "watch -n ${MONITOR_INTERVAL} -t 'echo \"=== Git ===\"; git -C ${project_dir} status --short 2>/dev/null || echo \"no repo\"; echo; echo \"=== Podman ===\"; podman ps --format \"{{.Names}} {{.Status}}\" 2>/dev/null | head -5; echo; echo \"=== Disk ===\"; df -h / | tail -1'" \
+        "watch -n ${MONITOR_INTERVAL} -t 'echo \"=== Podman ===\"; podman ps --format \"{{.Names}} {{.Status}}\" 2>/dev/null | head -5; echo; echo \"=== Git ===\"; git -C ${project_dir} status --short 2>/dev/null || echo \"no repo\"'" \
         Enter
 
     # Select OMP pane
@@ -244,7 +244,8 @@ OPTIONS
     --continue, -c      Attach to existing (default)
     --new, -n           Create new session
     --check-hosts       Ping model server endpoints before starting
-    --kill, -k NAME     Kill session (also stops its podman container)
+    --kill, -k NAME     Kill session (also stops its podman container) 
+    --attach, -a NAME   Attach to a specific session by name
 
 LAYOUT
     ┌──────────────────────────┬──────────┬──────────┐
@@ -258,7 +259,7 @@ LAYOUT
     Shell 1   — host terminal in project dir (middle, top)
     Shell 2   — second host terminal (middle, bottom)
     btop      — system resource monitor (right, top)
-    Monitor   — git status + podman ps + disk (right, bottom)
+    Monitor   — git status + podman ps + container logs (right, bottom)
 
 HOST CHECKS
     By default, host checks are skipped (opt-in).
@@ -269,9 +270,15 @@ HOST CHECKS
 IMAGE
     localhost/mags-codedev-omp:latest
 
+SESSION NAMING
+    Sessions are numbered omp-1, omp-2, etc. Killed sessions leave
+    gaps that get reused (e.g. killing omp-1 makes the next session
+    omp-1, not omp-3).
+
 EXAMPLES
     omp-workspace                      continue or create
     omp-workspace --new ~/proj         new session in ~/proj
+    omp-workspace --attach omp-2       attach to specific session
     omp-workspace --check-hosts        ping model servers first
     omp-workspace --list               show sessions
     omp-workspace --kill omp-1         kill session + container
@@ -282,6 +289,7 @@ EOF
 ACTION="continue"
 DIR=""
 TARGET=""
+ATTACH=""
 CHECK_HOSTS="false"
 
 while [ $# -gt 0 ]; do
@@ -294,6 +302,7 @@ while [ $# -gt 0 ]; do
         --force|-f)       CHECK_HOSTS="true"; shift ;;  # legacy alias
         --skip-checks)    shift ;;  # accepted for compat, no-op (checks are opt-in now)
         --kill|-k)        TARGET="${2:?--kill requires name}"; shift 2 ;;
+        --attach|-a)      ATTACH="${2:?--attach requires name}"; shift 2 ;;
         -*)               die "Unknown: $1 (--help)" ;;
         *)                DIR="$1"; shift ;;
     esac
@@ -302,6 +311,16 @@ done
 # ── Kill target ──────────────────────────────────────────────────────
 if [ -n "$TARGET" ]; then
     kill_session "$TARGET"
+    exit 0
+fi
+
+# ── Attach to specific session ───────────────────────────────────────
+if [ -n "$ATTACH" ]; then
+    if tmux has-session -t "$ATTACH" 2>/dev/null; then
+        tmux attach -t "$ATTACH"
+    else
+        die "Session not found: $ATTACH (use --list to see active)"
+    fi
     exit 0
 fi
 
