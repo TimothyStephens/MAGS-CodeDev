@@ -221,3 +221,7 @@ config.yaml
 .worktree_*/
 Dockerfile.mags-codedev
 *.sif.def
+
+# Node.js
+node_modules/
+bun.lock
