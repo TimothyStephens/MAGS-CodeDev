@@ -11,7 +11,7 @@ LABEL org.opencontainers.image.version="${BUILD_VERSION}"
 # ── System deps ──────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv git \
-    curl ca-certificates unzip \
+    curl ca-certificates unzip gnupg \
     gcc g++ make cmake \
     rustc cargo \
     golang-go \
@@ -21,8 +21,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nano vim \
     fd-find \
     ripgrep \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://get.apptainer.com | sh -s -- -b /usr/local/bin
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Apptainer (via APT repo to avoid CloudFront TLS issues) ──────
+RUN curl --http1.1 --retry 3 --retry-delay 2 -fsSL \
+        'https://pkgs.apptainer.io/gpg' | gpg --dearmor -o /usr/share/keyrings/apptainer.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/apptainer.gpg] https://pkgs.apptainer.io/stable/$$(. /etc/os-release && echo $${VERSION_ID})/$$(cat /etc/os-release | grep ^ID= | cut -d= -f2) main" \
+        > /etc/apt/sources.list.d/apptainer.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends apptainer \
+    && rm -rf /var/lib/apt/lists/*
 
 # fd is installed as fdfind on Debian — symlink to fd for pi-nvim-bridge
 RUN ln -sf /usr/bin/fdfind /usr/bin/fd
@@ -61,19 +69,14 @@ RUN git clone --depth 1 https://github.com/dabstractor/pi-nvim-bridge.git /opt/p
 # ── pi-codegraph — structural code analysis ──────────────────────
 RUN omp install @isac322/pi-codegraph || true
 
-# ── Context7 MCP — up-to-date library documentation ──────────────
-RUN mkdir -p /root/.omp/agent
-RUN echo '{"mcpServers":{"context7":{"command":"npx","args":["-y","@upstash/context7-mcp"]}}}' \
-    > /root/.omp/agent/.mcp.json
-
 # ── Code quality & workflow extensions ────────────────────────────
 RUN omp install pi-lens || true
 RUN omp install pi-context-prune || true
-RUN omp install @code-yeongyu/pi-rules || true
+RUN omp install pi-rules || true
 RUN omp install @narumitw/pi-statusline || true
 
 # ── Security & permission extensions ─────────────────────────────
-RUN omp install @aliou/pi-guardrails || true
+RUN cd /root/.omp/plugins && npm install @aliou/pi-guardrails@latest
 RUN omp install @gotgenes/pi-permission-system || true
 
 # ── MAGS-CodeDev CLI ─────────────────────────────────────────────
@@ -87,6 +90,16 @@ RUN pip install -e /mags
 # ── MAGs-CodeDev OMP extension ───────────────────────────────────
 COPY mags-codedev-extension/ /ext/
 RUN omp plugin link /ext
+
+# ── Relink plugins (may get unlinked by subsequent npm installs) ──
+RUN cd /opt/pi-nvim-bridge && omp plugin link . \
+    && omp plugin link /ext
+
+# ── Context7 MCP — up-to-date library documentation ──────────────
+# Written last to avoid being overwritten by OMP plugin installs
+RUN mkdir -p /root/.omp/agent \
+    && echo '{"mcpServers":{"context7":{"command":"npx","args":["-y","@upstash/context7-mcp"]}}}' \
+        > /root/.omp/agent/.mcp.json
 
 # ── Shell profile ────────────────────────────────────────────────
 RUN echo 'source /root/.bashrc 2>/dev/null' > /root/.profile
