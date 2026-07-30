@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN ln -sf /usr/bin/fdfind /usr/bin/fd
 
 # ── Neovim 0.11+ (for pi-nvim-bridge) ────────────────────────────
-RUN curl --http1.1 --retry 3 --retry-delay 2 -fsSL \
+RUN curl --http1.1 --retry 10 --retry-delay 5 -fsSL \
         -o /tmp/nvim.tar.gz \
         https://github.com/neovim/neovim/releases/download/stable/nvim-linux-x86_64.tar.gz \
     && tar xzf /tmp/nvim.tar.gz -C /opt \
@@ -35,23 +35,23 @@ RUN curl --http1.1 --retry 3 --retry-delay 2 -fsSL \
     && ln -sf /opt/nvim-linux-x86_64/bin/nvim /usr/bin/nvim
 
 # ── Bun (required runtime for OMP) ───────────────────────────────
-RUN curl -fsSL https://bun.sh/install | bash
+RUN for i in 1 2 3; do curl -fsSL https://bun.sh/install | bash && break || sleep 15; done
 ENV PATH="/root/.bun/bin:${PATH}"
 
 # ── OMP globally ─────────────────────────────────────────────────
-RUN npm install -g @oh-my-pi/pi-coding-agent
+RUN npm install -g --retry 5 --retries 10 @oh-my-pi/pi-coding-agent
 
-# ── Python packages — split for Docker layer caching + retry ─────
+# ── Python packages ──────────────────────────────────────────────
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV PIP_DEFAULT_TIMEOUT=120
-RUN pip install --retries 3 pytest pytest-cov flake8 mypy bandit
-RUN pip install --retries 3 pyright
-RUN pip install --retries 3 numpy pandas
-RUN pip install --retries 3 hound-mcp[all]
-RUN npm install -g playwright && playwright install chromium
+ENV PIP_RETRIES=10
+RUN pip install --retries 10 --timeout 120 \
+        pytest pytest-cov flake8 mypy bandit pyright numpy pandas
+RUN pip install --retries 10 --timeout 120 hound-mcp[all]
+RUN (command -v playwright &>/dev/null && echo "playwright already installed" || npm install -g --force playwright); playwright install chromium
 
 # ── pi-nvim-bridge — OMP autocomplete in Neovim ──────────────────
-RUN git clone --depth 1 https://github.com/dabstractor/pi-nvim-bridge.git /opt/pi-nvim-bridge \
+RUN for i in 1 2 3 4 5; do git clone --depth 1 https://github.com/dabstractor/pi-nvim-bridge.git /opt/pi-nvim-bridge && break || sleep 10; done \
     && cd /opt/pi-nvim-bridge \
     && omp plugin link . \
     && mkdir -p /root/.config/pi-bridge \
@@ -67,7 +67,7 @@ RUN omp install pi-rules || true
 RUN omp install @narumitw/pi-statusline || true
 
 # ── Security & permission extensions ─────────────────────────────
-RUN cd /root/.omp/plugins && npm install @aliou/pi-guardrails@latest
+RUN cd /root/.omp/plugins && npm install --retry 5 --retries 10 @aliou/pi-guardrails@latest
 RUN omp install @gotgenes/pi-permission-system || true
 
 # ── MAGS-CodeDev CLI ─────────────────────────────────────────────
