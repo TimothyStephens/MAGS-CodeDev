@@ -146,6 +146,9 @@ create_session() {
     # │                          │          │ Monitor  │
     # └──────────────────────────┴──────────┴──────────┘
 
+    # Clean up any stale container with same name
+    podman rm -f "${name}" 2>/dev/null || true
+
     # Pane 0: OMP — container ENTRYPOINT is bash, so start shell then run omp
     tmux new-session -d -s "$name" -c "$project_dir" \
         "podman run --name ${name} -it --rm --network=host ${omp_flag} ${image}"

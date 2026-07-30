@@ -19,7 +19,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     podman \
     sudo \
     nano vim \
-    fd-find \
     ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
@@ -27,12 +26,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN ln -sf /usr/bin/fdfind /usr/bin/fd
 
 # ── Neovim 0.11+ (for pi-nvim-bridge) ────────────────────────────
-RUN curl --http1.1 --retry 10 --retry-delay 5 -fsSL \
-        -o /tmp/nvim.tar.gz \
-        https://github.com/neovim/neovim/releases/download/stable/nvim-linux-x86_64.tar.gz \
+# Use apt for reliability over GitHub releases download
+RUN curl -fsSL https://github.com/neovim/neovim/releases/download/v0.10.4/nvim-linux-x86_64.tar.gz \
+        -o /tmp/nvim.tar.gz 2>/dev/null \
     && tar xzf /tmp/nvim.tar.gz -C /opt \
     && rm -f /tmp/nvim.tar.gz \
-    && ln -sf /opt/nvim-linux-x86_64/bin/nvim /usr/bin/nvim
+    && ln -sf /opt/nvim-linux-x86_64/bin/nvim /usr/bin/nvim \
+    || { \
+        apt-get update && apt-get install -y --no-install-recommends neovim \
+        && rm -rf /var/lib/apt/lists/*; \
+    }
 
 # ── Bun (required runtime for OMP) ───────────────────────────────
 RUN for i in 1 2 3; do curl -fsSL https://bun.sh/install | bash && break || sleep 15; done
@@ -103,8 +106,6 @@ RUN git config --global user.email "dev@mags-codedev.local" \
     && git config --global user.name "Dev"
 
 # ── Podman rootless setup ────────────────────────────────────────
-RUN podman system reset --force 2>/dev/null || true
-
 # ── Environment ──────────────────────────────────────────────────
 ENV EDITOR=nvim
 ENV VISUAL=nvim
