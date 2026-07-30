@@ -108,7 +108,7 @@ def debug(
             break
 
     # Auto-detect function from log file if not provided
-    if is_log_file and not module_location:
+    if is_log_file and not module_location and log_file_path is not None:
         try:
             log_hash = Path(log_file_path).stem
             if len(log_hash) == 64 and all(c in '0123456789abcdef' for c in log_hash):
@@ -201,7 +201,7 @@ def debug(
         response = chain.invoke({"input": error_msg})
 
         console.print(
-            Panel(strip_markdown_code(response.content), title="Debug Analysis", border_style="green")
+            Panel(strip_markdown_code(str(response.content)), title="Debug Analysis", border_style="green")
         )
 
 

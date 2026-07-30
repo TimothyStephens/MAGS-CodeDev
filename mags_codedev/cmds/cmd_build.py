@@ -56,9 +56,11 @@ async def process_module(
     branch_name = f"feature/{module_location}"
     func_logger = None
     log_filepath = None
+    func_hash: str | None = None
+    base_dir: str | None = None
     # Pre-initialized so the failure handler can reference them even when an
     # exception happens before the graph starts running.
-    final_state: dict | None = None
+    final_state: ModuleState | None = None
     token_counter: TokenCounter | None = None
 
     try:
@@ -252,7 +254,7 @@ async def process_module(
                     if state_update and "iteration_count" in state_update:
                         status_dict[module_location]["iterations"] = state_update["iteration_count"]
                     if state_update:
-                        final_state.update(state_update)
+                        final_state.update(state_update)  # type: ignore[arg-type]
                     if reporter:
                         reporter.module_step(
                             module_location, node_name,
@@ -394,7 +396,7 @@ async def process_module(
         # Persist any partial artifacts so the failed task's last good code is
         # inspectable, then clean up the worktree. final_state is set only once
         # the graph starts running, which also implies func_hash/base_dir exist.
-        if final_state is not None:
+        if final_state is not None and func_hash is not None and base_dir is not None:
             if final_state.get("code") or final_state.get("tests"):
                 try:
                     await asyncio.to_thread(
@@ -703,7 +705,7 @@ def build(
             # Mark blocked modules
             for loc in blocked:
                 failing_deps = [
-                    dep for dep in spec.get("dependencies", [])
+                    dep for dep in remaining[loc].get("dependencies", [])
                     if dep in failed_modules
                 ]
                 status_dict[loc]['status'] = f"Blocked: {', '.join(failing_deps)} failed"

@@ -58,7 +58,7 @@ def list_models(
                 from google import genai
                 client = genai.Client(api_key=api_keys["gemini"])
                 for m in client.models.list():
-                    name = m.name.replace("models/", "")
+                    name = m.name.replace("models/", "") if m.name else str(m.name)
                     table.add_row("Google", name)
             except ImportError:
                 try:
@@ -66,8 +66,8 @@ def list_models(
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore")
                         import google.generativeai as genai
-                    genai.configure(api_key=api_keys["gemini"])
-                    for m in genai.list_models():
+                    genai.configure(api_key=api_keys["gemini"])  # type: ignore[attr-defined]
+                    for m in genai.list_models():  # type: ignore[attr-defined]
                         if 'generateContent' in m.supported_generation_methods:
                             name = m.name.replace("models/", "")
                             table.add_row("Google", name)
@@ -95,7 +95,7 @@ def list_models(
     if api_keys.get("mistral"):
         try:
             try:
-                from mistralai.client import MistralClient
+                from mistralai.client import MistralClient  # type: ignore[import-not-found]
                 client = MistralClient(api_key=api_keys["mistral"])
                 models = client.list_models()
                 for m in models.data:

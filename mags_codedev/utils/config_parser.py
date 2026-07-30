@@ -10,15 +10,15 @@ from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
 try:
-    from langchain_mistralai import ChatMistralAI
+    from langchain_mistralai import ChatMistralAI  # type: ignore[import-not-found]
 except ImportError:
     ChatMistralAI = None
 try:
-    from langchain_ollama import ChatOllama
+    from langchain_ollama import ChatOllama  # type: ignore[import-not-found]
 except ImportError:
     ChatOllama = None
 try:
-    from langchain_cohere import ChatCohere
+    from langchain_cohere import ChatCohere  # type: ignore[import-not-found]
 except ImportError:
     ChatCohere = None
 
@@ -203,7 +203,7 @@ def get_log_level(config_path: Path = Path("config.yaml")) -> str:
 def _make_openai(model_config: dict, api_keys: dict, model_name: str):
     """OpenAI ChatCompletion."""
     return ChatOpenAI(
-        api_key=api_keys.get("openai") or os.environ.get("OPENAI_API_KEY"),
+        api_key=api_keys.get("openai") or os.environ.get("OPENAI_API_KEY"),  # type: ignore[arg-type]
         model=model_name,
         base_url=model_config.get("base_url") or os.environ.get("OPENAI_BASE_URL"),
     )
@@ -211,10 +211,10 @@ def _make_openai(model_config: dict, api_keys: dict, model_name: str):
 
 def _make_anthropic(model_config: dict, api_keys: dict, model_name: str):
     return ChatAnthropic(
-        api_key=api_keys.get("anthropic") or os.environ.get("ANTHROPIC_API_KEY"),
-        model=model_name,
-        base_url=model_config.get("base_url") or os.environ.get("ANTHROPIC_BASE_URL"),
-    )
+        api_key=api_keys.get("anthropic") or os.environ.get("ANTHROPIC_API_KEY"),  # type: ignore[arg-type]
+        model_name=model_name,  # type: ignore[arg-type]
+        base_url=model_config.get("base_url") or os.environ.get("ANTHROPIC_BASE_URL"),  # type: ignore[arg-type]
+    )  # type: ignore[call-arg]
 
 
 def _make_google(model_config: dict, api_keys: dict, model_name: str):
@@ -289,7 +289,7 @@ def _make_local(model_config: dict, api_keys: dict, model_name: str):
         or "dummy"
     )
     return ChatOpenAI(
-        api_key=api_key,
+        api_key=api_key,  # type: ignore[arg-type]
         base_url=base_url,
         model=model_name,
     )
@@ -336,7 +336,7 @@ def _create_llm_instance(
         # Attach the token logging callback (append, don't overwrite).
         if llm.callbacks is None:
             llm.callbacks = []
-        llm.callbacks.append(
+        llm.callbacks.append(  # type: ignore[union-attr]
             TokenLoggingCallbackHandler(role=role, model_name=model_name, base_dir=base_dir)
         )
 

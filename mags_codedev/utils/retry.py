@@ -44,7 +44,7 @@ def _is_retryable_error(exception: BaseException) -> bool:
 
     # Fallback: check error message string (use word boundaries to avoid false positives)
     msg = str(exception).lower()
-    return (
+    return bool(
         re.search(r"\b503\b", msg)
         or "unavailable" in msg
         or "rate limit" in msg
@@ -106,7 +106,7 @@ def invoke_with_retry(
     TRACE logging (when enabled): attempt/elapsed/delay on each retry, error
     type on failure, and token usage on success.
     """
-    _log = logging.getLogger("mags_codedev").trace
+    _log = logging.getLogger("mags_codedev").trace  # type: ignore[attr-defined]
     start = time.monotonic()
     attempt = [0]
 
@@ -146,7 +146,7 @@ async def ainvoke_with_retry(
     Used by the reviewer node, which runs several reviewers concurrently and
     must retry transient errors independently per reviewer.
     """
-    _log = logging.getLogger("mags_codedev").trace
+    _log = logging.getLogger("mags_codedev").trace  # type: ignore[attr-defined]
     start = time.monotonic()
     attempt = [0]
 

@@ -14,24 +14,24 @@ Logger hierarchy:
     mags_codedev.func.<hash>              ← per-module logger (build)
     └── logs/<hash>.log (RotatingFileHandler) ← 5 MB × 5 backups, propagate=True
 """
-
 import logging
-from pathlib import Path
 import os
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Optional
 
-logging.addLevelName(5, "TRACE")
+# Register TRACE level (5) and monkey-patch Logger.trace at runtime.
+TRACE_LEVEL = 5
+logging.addLevelName(TRACE_LEVEL, "TRACE")
 
 
-def trace(self, message, *args, **kwargs):
+def _trace_impl(self, message, *args, **kwargs) -> None:
     """Log a TRACE-level message (below DEBUG)."""
-    if self.isEnabledFor(5):
-        self._log(5, message, args, **kwargs)  # type: ignore[attr-defined]
+    if self.isEnabledFor(TRACE_LEVEL):
+        self._log(TRACE_LEVEL, message, args, **kwargs)  # type: ignore[attr-defined]
 
 
-logging.Logger.trace = trace
-
+logging.Logger.trace = _trace_impl  # type: ignore[attr-defined]
 # Module-level root logger (lazy setup via setup_logger).
 logger = logging.getLogger("mags_codedev")
 # --------------- constants ---------------

@@ -321,11 +321,11 @@ def run_command_in_project_env(
     backend=None,
 ) -> str:
     """Helper to run a command in the configured environment against the whole project."""
-    state = ModuleState(
-        worktree_path=project_root,
-        config_path=config_path,
-        log_filepath=None,
-    )
+    state: ModuleState = {
+        "worktree_path": project_root,
+        "config_path": config_path,
+        "log_filepath": "",
+    }  # type: ignore[arg-type]
     return _run_in_environment(state, command)
 
 
@@ -357,6 +357,7 @@ def _write_worktree_files(state: ModuleState, func_logger: logging.Logger) -> No
 
     # Write source code
     if code and spec_location:
+        code_abs_path: str | None = None
         try:
             code_abs_path = os.path.join(worktree_path, spec_location)
             os.makedirs(os.path.dirname(code_abs_path), exist_ok=True)
@@ -367,6 +368,7 @@ def _write_worktree_files(state: ModuleState, func_logger: logging.Logger) -> No
 
     # Write tests
     if tests and test_location:
+        test_abs_path: str | None = None
         try:
             test_abs_path = os.path.join(worktree_path, test_location)
             os.makedirs(os.path.dirname(test_abs_path), exist_ok=True)

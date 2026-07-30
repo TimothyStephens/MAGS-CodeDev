@@ -65,8 +65,12 @@ def init(
         config_was_created = False
     else:
         # Bootstrap: copy user default or template to <base_dir>/config.yaml
-        config_path, config_was_created = _bootstrap_config(_DEFAULT_BASE_DIR)
+        boot_path, config_was_created = _bootstrap_config(_DEFAULT_BASE_DIR)
+        config_path = boot_path  # narrow from Optional[Path] to Path
         base_dir = resolve_base_dir(config_path)
+
+    # At this point config_path is always a Path
+    assert isinstance(config_path, Path)
 
     # Default manifest to <base_dir>/manifest.json if not specified
     if manifest_path is None:

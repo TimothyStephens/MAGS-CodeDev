@@ -44,7 +44,7 @@ _CONFIG_HELP_TEXT = (
 # Config bootstrap
 # -------------------------------------------------------------------
 
-def _bootstrap_config(base_dir: str) -> tuple:
+def _bootstrap_config(base_dir: str) -> tuple[Path, bool]:
     """Copy user default or template to <base_dir>/config.yaml.
 
     Returns (config_path, was_created).

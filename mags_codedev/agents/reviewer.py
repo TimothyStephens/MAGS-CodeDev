@@ -90,7 +90,7 @@ async def _get_review(llm, state: ModuleState) -> str:
         # TRACE: log token usage if available
         if hasattr(response, "usage_metadata"):
             meta = response.usage_metadata
-            func_logger.trace(
+            func_logger.trace(  # type: ignore[attr-defined]
                 "[Session %d, Review Round %d] Reviewer (%s) tokens: input=%s, output=%s",
                 session,
                 review_round,

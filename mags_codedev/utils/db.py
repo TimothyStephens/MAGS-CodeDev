@@ -489,7 +489,7 @@ def _extract_tokens(response: LLMResult) -> Tuple[int, int]:
         for generation_list in response.generations:
             for gen in generation_list:
                 if hasattr(gen, "message"):
-                    usage = getattr(gen.message, "usage_metadata", {})
+                    usage = getattr(gen.message, "usage_metadata", {})  # type: ignore[attr-defined]
                     if usage:
                         in_tokens += usage.get("input_tokens", 0)
                         out_tokens += usage.get("output_tokens", 0)
@@ -523,7 +523,7 @@ class TokenLoggingCallbackHandler(BaseCallbackHandler):
         in_tokens, out_tokens = _extract_tokens(response)
 
         if in_tokens > 0 or out_tokens > 0:
-            logger.trace(
+            logger.trace(  # type: ignore[attr-defined]
                 "Token usage — role=%s, model=%s, input=%d, output=%d",
                 self.role,
                 self.model_name,
