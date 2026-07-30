@@ -1,6 +1,7 @@
 """LangGraph workflow: build function graph with test/lint/review routes."""
 
 import hashlib
+import logging
 from typing import Any
 from langgraph.constants import END
 from langgraph.graph import StateGraph
@@ -16,14 +17,16 @@ from mags_codedev.agents.log_checker import log_checker_node
 from mags_codedev.agents.reviewer import multi_llm_review_node
 
 # ---- Module-level edge functions (extracted for testability) ----
-
 def evaluate_test_results(state: ModuleState) -> str:
-    """Check if tests passed, failed, or max iterations reached.
-    Sets _next_reason on state and returns route string."""
+    """Route after run_tests: tests passed → linters, failed → log_checker, max → end.
+
+    Pure function — does NOT mutate state. The routing reason is logged to
+    the module logger (propagates to workflow.log) for traceability.
+    """
+    _log = logging.getLogger("mags_codedev")
     max_iters = state.get("max_test_fix_iterations", 5)
-    if max_iters > 0 and state["iteration_count"] >= max_iters:
-        reason = f"Max test fix iterations ({max_iters}) reached."
-        state["_next_reason"] = reason
+    if max_iters > 0 and state.get("iteration_count", 0) >= max_iters:
+        _log.info("[Route] Max test fix iterations (%d) reached.", max_iters)
         return "max_iterations_reached"
 
     backend = state.get("backend")
@@ -34,44 +37,35 @@ def evaluate_test_results(state: ModuleState) -> str:
     test_results = state.get("test_results", "")
     test_upper = test_results.upper()
 
-    # Check for failure keywords first
     if any(kw in test_upper for kw in failure_keywords):
-        state["_next_reason"] = "Tests failed, sending to log checker for analysis."
+        _log.info("[Route] Tests failed, sending to log checker.")
         return "tests_failed"
 
-    # Check for "no tests collected" (pytest exit code 5)
-    # M14: Removed "deselected" — false positive with pytest -k filter
-    no_tests_indicators = [
-        "collected 0 items",
-        "no tests ran",
-        "no tests collected",
-    ]
+    no_tests_indicators = ["collected 0 items", "no tests ran", "no tests collected"]
     if any(ind in test_results.lower() for ind in no_tests_indicators):
-        state["_next_reason"] = "No tests collected, sending to log checker."
+        _log.info("[Route] No tests collected, sending to log checker.")
         return "tests_failed"
 
-    # Empty results = something went wrong
     if not test_results.strip():
-        state["_next_reason"] = "Empty test results, sending to log checker."
+        _log.info("[Route] Empty test results, sending to log checker.")
         return "tests_failed"
 
-    state["_next_reason"] = "Tests passed, proceeding to linting."
+    _log.info("[Route] Tests passed, proceeding to linting.")
     return "tests_passed"
 
-
 def evaluate_logs(state: ModuleState) -> str:
-    """Check if log checker found issues, and route accordingly.
-    Sets _next_reason on state and returns route string."""
+    """Route after log_checker: clean → convergence check, fix → coder/tester.
+
+    Pure function — does NOT mutate state.
+    """
+    _log = logging.getLogger("mags_codedev")
     max_iters = state.get("max_test_fix_iterations", 5)
-    if max_iters > 0 and state["iteration_count"] >= max_iters:
-        reason = f"Max test fix iterations ({max_iters}) reached."
-        state["_next_reason"] = reason
+    if max_iters > 0 and state.get("iteration_count", 0) >= max_iters:
+        _log.info("[Route] Max test fix iterations (%d) reached.", max_iters)
         return "max_iterations_reached"
 
-    # Use test_error_summary (scoped tracking — includes test + lint analysis)
     error_summary = state.get("test_error_summary", "")
 
-    # If log_checker explicitly said no issues, we're clean
     if error_summary:
         summary_lower = error_summary.lower()
         no_issue_phrases = [
@@ -80,46 +74,49 @@ def evaluate_logs(state: ModuleState) -> str:
             "no issues detected", "no changes required", "all tests passed",
         ]
         if any(phrase in summary_lower for phrase in no_issue_phrases):
-            state["_next_reason"] = "No issues found, proceeding to convergence check."
+            _log.info("[Route] No issues found, proceeding to convergence check.")
             return "clean"
-    # If there's a test error summary, route based on error_location
-    if error_summary:
-        # Linter-only issue → cosmetic, let review handle it
+
         if (
-            ("linter" in error_summary.lower() or "linting" in error_summary.lower()
-             or "style" in error_summary.lower() or "pep 8" in error_summary.lower())
-            and "assertion" not in error_summary.lower()
-            and "test failed" not in error_summary.lower()
-            and "test error" not in error_summary.lower()
+            ("linter" in summary_lower or "linting" in summary_lower
+             or "style" in summary_lower or "pep 8" in summary_lower)
+            and "assertion" not in summary_lower
+            and "test failed" not in summary_lower
+            and "test error" not in summary_lower
         ):
-            state["_next_reason"] = "Linting only issue (cosmetic), proceeding to review."
+            _log.info("[Route] Linting only issue (cosmetic), proceeding to review.")
             return "clean"
-        # If location is explicitly set, trust it
+
         error_location = state.get("error_location")
         if error_location == "TEST_CODE":
-            state["_next_reason"] = f"Test error found: {error_summary[:120]}"
+            _log.info("[Route] Test error found: %s", error_summary[:120])
             return "fix_tests"
         if error_location == "SOURCE_CODE":
-            state["_next_reason"] = f"Source error found: {error_summary[:120]}"
+            _log.info("[Route] Source error found: %s", error_summary[:120])
             return "fix_source"
-    state["_next_reason"] = "No issues found, proceeding to convergence check."
+
+    _log.info("[Route] No issues found, proceeding to convergence check.")
     return "clean"
 
-
 def evaluate_reviews(state: ModuleState) -> str:
-    """Check if review found issues, and route accordingly.
-    Sets _next_reason on state and returns route string."""
+    """Route after multi_llm_review: approved → end, revise → coder.
+
+    Pure function — does NOT mutate state.
+    """
+    _log = logging.getLogger("mags_codedev")
     max_rounds = state.get("max_review_rounds", 3)
     if max_rounds > 0 and state.get("review_round_count", 0) >= max_rounds:
-        reason = f"Max review rounds ({max_rounds}) reached."
-        state["_next_reason"] = reason
+        _log.info("[Route] Max review rounds (%d) reached.", max_rounds)
         return "max_review_rounds_reached"
 
     review_comments = state.get("review_comments")
     if review_comments:
-        state["_next_reason"] = f"Reviewer comments found ({len(review_comments)} comment(s)), sending to Coder for fix."
+        _log.info(
+            "[Route] Reviewer comments found (%d), sending to Coder for fix.",
+            len(review_comments),
+        )
         return "revise"
-    state["_next_reason"] = "All reviewers approved, proceeding to session end."
+    _log.info("[Route] All reviewers approved, proceeding to session end.")
     return "approved"
 
 
@@ -156,14 +153,16 @@ def check_convergence(state: ModuleState) -> dict:
     }
 
 
-# L2: Moved to module level to avoid recreating on every build_function_graph() call
 def check_convergence_route(state: ModuleState) -> str:
-    """Route after convergence check: end if failed, else proceed to review.
-    Sets _next_reason on state and returns route string."""
+    """Route after convergence check: failed → end, changed → review.
+
+    Pure function — does NOT mutate state.
+    """
+    _log = logging.getLogger("mags_codedev")
     if state.get("status") == "failed":
-        state["_next_reason"] = "Convergence check failed, ending session."
+        _log.info("[Route] Convergence check failed, ending session.")
         return "__end__"
-    state["_next_reason"] = "Code/tests changed, sending to multi-LLM review."
+    _log.info("[Route] Code/tests changed, sending to multi-LLM review.")
     return "multi_llm_review"
 
 

@@ -16,7 +16,7 @@ def _status_color(status: str) -> str:
     if "Blocked" in status:
         return "yellow"
     if "Waiting" in status:
-        return "dim"
+        return "magenta"
     return "blue"
 
 
@@ -63,7 +63,7 @@ def _short_status(status: str) -> str:
     return status
 
 
-def generate_status_table(status_dict: dict, module_map: Optional[dict] = None):
+def generate_status_table(status_dict: dict, module_map: Optional[dict] = None, base_dir: str = ".mags-codedev"):
     """Generates a dependency tree with totals footer: file | hash | status | tokens."""
     if not module_map:
         return _flat_table(status_dict)
@@ -80,7 +80,7 @@ def generate_status_table(status_dict: dict, module_map: Optional[dict] = None):
     def _node_label(loc: str) -> str:
         """Build node label: file  hash  STATUS  [artifact?]  tok."""
         info = status_dict.get(loc, {})
-        status = info.get("status", "Pending")
+        status = info.get("status", "Queued")
         hash_val = info.get("hash", "")[:8] or "—"
         color = _status_color(status)
         icon = _status_icon(status)
@@ -131,11 +131,22 @@ def generate_status_table(status_dict: dict, module_map: Optional[dict] = None):
     blocked = sum(1 for info in status_dict.values() if "Blocked" in info.get("status", ""))
     waiting = len(status_dict) - completed - failed - blocked
 
+    # Fallback: if no per-module token data (modules built before module_tokens
+    # table existed), use the aggregate token_usage total from the DB.
+    if total_in == 0 and total_out == 0:
+        try:
+            from mags_codedev.utils.db import get_token_summary
+            _, _, (db_in, db_out) = get_token_summary(base_dir=base_dir)
+            total_in, total_out = db_in, db_out
+        except Exception:
+            pass
+
     tok_str = _token_str({"tokens_in": total_in, "tokens_out": total_out})
+    total = len(status_dict)
     footer = (
         "[dim]─[/dim]" * 40 + "\n"
-        f"{blocked} ⚠ blocked, {waiting} ◌ waiting  "
-        f"[dim]{tok_str}[/dim]"
+        f"{completed} ✓ done, {failed} ✗ errored, {blocked} ⚠ blocked, {waiting} ◌ waiting  "
+        f"({total} total)  [dim]{tok_str}[/dim]"
     )
 
     return Group(tree, footer)
@@ -152,7 +163,7 @@ def _flat_table(status_dict: dict):
 
     for loc in sorted(status_dict):
         info = status_dict[loc]
-        status = info.get("status", "Pending")
+        status = info.get("status", "Queued")
         color = _status_color(status)
         icon = _status_icon(status)
         hash_val = info.get("hash", "")[:8] or "—"

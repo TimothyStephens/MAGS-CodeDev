@@ -1,70 +1,78 @@
 # MAGs-CodeDev
 
-Multi-agent LLM-powered software development workflow using [LangGraph](https://langchain-ai.github.io/langgraph/). Each module in a project is built by a dedicated agent graph that codes, tests, reviews, and iterates until convergence.
+**M**ulti-**A**gent **G**raph **S**ystem for **Code** **Dev**elopment.
+
+MAGs-CodeDev is an autonomous, multi-agent AI software engineer built for the command line. You give it a **manifest** of modules (with descriptions and dependencies), and it builds them as a **DAG** — running each module through an agent loop (code → test → diagnose → review → iterate) in an isolated git worktree + container, then merges to `main` on success.
 
 ```
   ┌─────────┐   ┌─────────┐   ┌──────────┐   ┌──────────┐
   │ Coder   │──▶│ Tester  │──▶│ LogCheck │──▶│ Reviewer │
-  │ (write) │   │ (write  │   │ (triage) │   │ (review) │
-  │  code)  │   │  tests) │   │          │   │  code)   │
+  │ (write  │   │ (write  │   │ (triage  │   │ (multi-  │
+  │  code)  │   │  tests) │   │  errors) │   │  LLM)    │
   └────┬────┘   └────┬────┘   └─────┬────┘   └─────┬────┘
        │              │              │               │
-       └──▶ run tests ──▶ results ◀─┘               │
-           └──▶ run lints ──▶ results ◀─────────────┘
-              │
-         ┌────┴─────────────────────────────────────┐
-         │  Converged? ──no──▶ route back to Coder   │
-         │  Converged? ──yes──▶ commit, mark done    │
-         └───────────────────────────────────────────┘
+       │    ┌─▶ run tests ─▶ results ◀─┘             │
+       │    │   └─▶ run lints ─▶ results ◀───────────┘
+       │    │      │
+       │    │  ┌───┴──────────────────────────────────┐
+       │    │  │ Convergence check (SHA-256 hashes)   │
+       │    │  │  changed → review                     │
+       │    │  │  unchanged → fail (no progress)       │
+       │    │  └──────────────────────────────────────┘
+       │    │         │
+       │    │    ┌─────┴────────────────────────────────┐
+       │    │    │ Review: majority LGTM → merge        │
+       │    │    │  actionable comments → back to coder │
+       │    └────┴──────────────────────────────────────┘
+       │         log_checker routes: fix_source → coder
+       └────────                   fix_tests  → tester
 ```
 
-Each module runs in its own **git worktree** and **container runtime**, with parallel modules building concurrently.
+Each module runs in its own **git worktree** and **container**, with independent modules building concurrently in DAG waves. Failed modules don't block the rest.
 
 ---
 
 ## Installation
 
-### Option A: Editable install (recommended for development)
-
-Uses `pyproject.toml` for dependency resolution and installs the package in editable mode.
+### Standalone CLI
 
 ```bash
-# Create a virtual environment
+# Clone and install
+git clone <repo>
+cd MAGs-CodeDev
 python3 -m venv .venv && source .venv/bin/activate
-
-# Install in development mode
 pip install -e .
 
-# Verify installation
+# Verify
 mags-codedev --help
 ```
 
-### Option B: Requirements file
+### OMP Extension (streaming + structured)
 
-Install directly from `requirements.txt` (no editable mode).
-
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### Option C: Conda environment
+For integration with [Oh My Pi](https://omp.sh) — streaming JSONL progress, structured results, session auto-detect:
 
 ```bash
-conda create -n mags-codedev python=3.11 -y
-conda activate mags-codedev
-pip install -e .
+# Prerequisites: OMP installed
+bun install -g @oh-my-pi/pi-coding-agent
+
+# Install the CLI (same as standalone)
+cd MAGs-CodeDev && pip install -e .
+
+# Install the extension
+omp install ./mags-codedev-extension
+
+# Verify
+omp -p '/extensions'   # should show mags-codedev-extension (7 tools)
 ```
 
-### Option D: Mamba environment
+### Container Sandbox (full isolation)
+
+A podman image bundling OMP + MAGs-CodeDev + Python/Rust/Go toolchains:
 
 ```bash
-mamba create -n mags-codedev python=3.11 -y
-mamba activate mags-codedev
-pip install -e .
+bash Containerfile_build          # builds localhost/mags-codedev-omp:latest
+./omp-workspace                   # launches tmux + podman session
 ```
-
-> **Note:** MAGs-CodeDev depends on LangChain/LangGraph packages which are pure Python and not available as conda-forge packages. Use `pip install` inside the conda/mamba environment for these.
 
 ### Dependencies
 
@@ -79,15 +87,7 @@ pip install -e .
 
 ### Container Runtime
 
-The framework auto-detects the best available container runtime:
-
-1. **Podman** (preferred)
-2. **Docker**
-3. **Apptainer** (or Singularity — accepted as alias)
-4. **Singularity**
-5. **Local** (falls back to host environment)
-
-Set `test_runner: "auto"` in config (default) for auto-detection, or pin a specific runtime.
+Auto-detected in priority order: **podman > docker > apptainer > singularity > local**. Set `test_runner: "auto"` (default) or pin a specific runtime. The local runner installs the project's `requirements.txt` + test toolchain before running tests.
 
 ---
 
@@ -99,39 +99,19 @@ Set `test_runner: "auto"` in config (default) for auto-detection, or pin a speci
 mags-codedev init
 ```
 
-This creates:
-- `.mags-codedev/config.yaml` — copied from `~/.omp/agent/mags-codedev.yaml` (if it exists), or from the package template
-- `.mags-codedev/cache.db` — SQLite database tracking build state
-- `.mags-codedev/logs/` — per-module log files
-- `.mags-codedev/worktrees/` — git worktrees for each module
-- `.mags-codedev/containers/` — container image definitions
-- `manifest.json` — module definitions (or AI Architect interactive session)
-- `AGENT.md` — coding conventions for the LLM agents
-- `.gitignore` — auto-configured to ignore `.mags-codedev/`
-- Git repo (initialized if one doesn't exist)
+Creates `.mags-codedev/` (config, cache.db, logs, worktrees), `manifest.json`, `AGENT.md`, `.gitignore`, and a git repo if needed. In interactive mode, the AI Architect helps design the project structure.
 
-**Options:**
 | Flag | Description |
 |---|---|
-| `--non-interactive` | Skip editor and AI Architect mode |
-| `--offline` | Skip LLM calls entirely |
-| `-m PATH` | Custom manifest path (default: `manifest.json`) |
+| `--non-interactive` | Skip editor + AI Architect |
+| `-m PATH` | Custom manifest path (default: `<base_dir>/manifest.json`) |
 | `-c PATH` | Custom config path |
 
 ### 2. Configure API Keys
 
-Edit `.mags-codedev/config.yaml`:
-
-```yaml
-api_keys:
-  openai: "sk-..."
-  anthropic: "sk-ant-..."
-  gemini: "AIza..."
-```
+Edit `.mags-codedev/config.yaml`. Keys can also be set via environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, etc.) — env vars take priority.
 
 ### 3. Edit the Manifest
-
-`manifest.json` is a JSON array of module specifications:
 
 ```json
 [
@@ -158,25 +138,15 @@ api_keys:
 mags-codedev build
 ```
 
-The build system:
-1. Loads the manifest and validates dependencies (no cycles)
-2. Creates a dependency graph and computes build order (topological sort)
-3. For each module, spawns a **parallel LangGraph** with:
-   - **Coder** — writes module code based on description + dependency source
-   - **Tester** — writes and runs tests in an isolated container
-   - **LogChecker** — analyzes test/lint output, determines if failure is in code or tests
-   - **Reviewers** — multiple LLM agents review code concurrently
-4. Routes back to Coder or Tester if errors are found (up to `max_test_fix_iterations`)
-5. Commits to the module's git worktree branch on success
-6. Prints a live status tree with token usage
+Builds modules in DAG dependency order (topological waves). Each module runs the agent loop in an isolated worktree + container. On success, commits to a `feature/<location>` branch and merges to `main`. Failed modules are reported with their log file path — independent modules in other waves still run.
 
-**Options:**
 | Flag | Description |
 |---|---|
-| `--force-fresh` | Delete worktrees/branches, rebuild everything from scratch |
+| `--module <location>` | Build only this module (forces a rebuild even if already built) |
+| `--force-fresh` | Delete all worktrees/branches, rebuild everything |
 | `--skip-validation` | Skip the pre-build LLM connection check |
-| `--offline` | Use stub LLMs (no API calls) |
-| `-v` / `-vv` | Debug / trace verbosity |
+| `--json` | Emit JSONL status events to stdout (for OMP / CI integration) |
+| `-v` / `-vv` | Debug (full LLM chat + file contents) / trace |
 | `-m PATH` | Custom manifest path |
 | `-c PATH` | Custom config path |
 
@@ -186,39 +156,24 @@ The build system:
 
 ### `mags-codedev init`
 
-Initialize a new workspace.
+Initialize a workspace.
 
 ```bash
 mags-codedev init
-mags-codedev init --non-interactive --offline
-mags-codedev init -m custom_manifest.json -c /path/to/config.yaml
+mags-codedev init --non-interactive
 ```
-
-| Flag | Default | Description |
-|---|---|---|
-| `-m, --manifest` | `manifest.json` | Path for the manifest file |
-| `-c, --config` | auto | Path to config.yaml |
-| `--interactive/--non-interactive` | interactive | Open editor + AI Architect |
-| `--offline` | false | Skip LLM API calls |
 
 ### `mags-codedev build`
 
-Build all pending modules using parallel LangGraph agents.
+Build all pending modules (or a single module with `--module`).
 
 ```bash
 mags-codedev build
-mags-codedev build --force-fresh
-mags-codedev build -vv                    # trace-level logging
+mags-codedev build --module src/pricing.py    # rerun one task
+mags-codedev build --force-fresh              # rebuild everything
+mags-codedev build --json                     # JSONL output for OMP/CI
+mags-codedev build -v                         # debug (full LLM chat in logs)
 ```
-
-| Flag | Default | Description |
-|---|---|---|
-| `-m, --manifest` | `manifest.json` | Manifest path |
-| `-c, --config` | auto | Config path |
-| `--force-fresh` | false | Rebuild everything, ignore DB cache |
-| `--skip-validation` | false | Skip pre-build connection check |
-| `--offline` | false | Stub LLMs |
-| `-v` (count) | 0 | Verbosity: 0=info, 1=debug, 2=trace |
 
 ### `mags-codedev test`
 
@@ -226,60 +181,36 @@ Run project tests in the configured container environment.
 
 ```bash
 mags-codedev test
-mags-codedev test -v                      # debug logging
+mags-codedev test -v
 ```
-
-| Flag | Default | Description |
-|---|---|---|
-| `-c, --config` | auto | Config path |
-| `--offline` | false | Stub LLMs |
-| `-v` (count) | 0 | Verbosity |
 
 ### `mags-codedev debug <ERROR_MSG>`
 
-Pass an error trace or bug description to the LLM for automatic fixing.
+Pass an error trace or log file path to the LLM for automatic fixing. Auto-detects the module from the log file hash.
 
 ```bash
 mags-codedev debug "ImportError: cannot import name 'X' from 'Y'"
-mags-codedev debug /path/to/error.log
-mags-codedev debug "Bug in pricing calculation" --mod src/pricing.py
+mags-codedev debug .mags-codedev/logs/<hash>.log
+mags-codedev debug "Bug in pricing" --mod src/pricing.py
 ```
 
-| Argument | Description |
-|---|---|
-| `error_msg` | Error text or path to log file |
-
-| Flag | Default | Description |
-|---|---|---|
-| `--mod, --module` | auto | Target module location |
-| `-m, --manifest` | `manifest.json` | Manifest path |
-| `-c, --config` | auto | Config path |
-| `--offline` | false | Stub LLMs |
-| `-v` (count) | 0 | Verbosity |
+After debugging, use `mags-codedev build --module <location>` to rerun the task.
 
 ### `mags-codedev chat`
 
-Interactive chat with the LLM about the codebase. Can read and write files.
+Interactive chat with the LLM about the codebase (can read/write files).
 
 ```bash
 mags-codedev chat
 ```
 
-| Flag | Default | Description |
-|---|---|---|
-| `-c, --config` | auto | Config path |
-| `--offline` | false | Stub LLMs |
-| `-v` (count) | 0 | Verbosity |
-
 ### `mags-codedev tokens`
 
-Display token usage and cost statistics across all models and runs.
+Display token usage by role and model.
 
 ```bash
 mags-codedev tokens
 ```
-
-Shows a table with: role, model, prompt tokens, completion tokens, total tokens, and cost.
 
 ### `mags-codedev list-models`
 
@@ -287,14 +218,11 @@ List available models from configured providers.
 
 ```bash
 mags-codedev list-models
-mags-codedev list-models -c /path/to/config.yaml
 ```
-
-Probes each configured provider (OpenAI, Anthropic, Google, custom) and lists available models.
 
 ### `mags-codedev clean`
 
-Remove all generated artifacts: `.mags-codedev/` directory, logs, worktrees, cache.
+Remove all generated artifacts.
 
 ```bash
 mags-codedev clean
@@ -305,16 +233,14 @@ mags-codedev clean --force    # skip confirmation
 
 ## Configuration
 
-Config lives at `.mags-codedev/config.yaml` (default). Override with `-c`.
-
-### Full Reference
+Config lives at `.mags-codedev/config.yaml`. Override with `-c`.
 
 ```yaml
-# API keys for LLM providers
 api_keys:
   openai: "sk-..."
   anthropic: "sk-ant-..."
   gemini: "AIza..."
+  ollama: "ollama-api-key-..."   # for local providers
 
 models:
   # Interactive commands (init, chat, debug)
@@ -334,19 +260,15 @@ models:
     log_checker:
       provider: "google"
       model: "gemini-2.5-pro"
-    # Multiple reviewers run concurrently
-    reviewers:
+    reviewers:                      # multiple reviewers run concurrently
       - provider: "openai"
         model: "gpt-4o"
-      - provider: "google"
-        model: "gemini-2.5-pro"
       - provider: "anthropic"
         model: "claude-3-5-sonnet-20240620"
-      # Local model via OpenAI-compatible endpoint
-      - provider: "custom_openai"
+      # Local model via OpenAI-compatible endpoint (Ollama, vLLM, LM Studio)
+      - provider: "local"
         model: "llama3:70b"
         base_url: "http://localhost:11434/v1"
-        api_key: "ollama"
 
 settings:
   language: "python"
@@ -354,7 +276,8 @@ settings:
   # Container runtime: auto | podman | docker | apptainer | singularity | local
   test_runner: "auto"
 
-  # Container images (per runtime)
+  # Container image names (auto-built if missing)
+  podman_test_image: "mags-dev-env:latest"
   docker_test_image: "mags-dev-env:latest"
   apptainer_test_image: "mags-dev-env.sif"
 
@@ -366,8 +289,8 @@ settings:
 
   # Parallelism and budgets
   max_parallel_modules: 4
-  max_test_fix_iterations: 5
-  max_review_rounds: 3
+  max_test_fix_iterations: 5     # max test/lint fix cycles before aborting
+  max_review_rounds: 3          # max review revision rounds before aborting
   timeout_per_module_mins: 15
 
   # Artifact directory (auto-gitignored)
@@ -375,47 +298,84 @@ settings:
 
   # Logging: info | debug | trace
   log_level: "info"
+
+  # Merge policy: auto | prompt
+  merge_policy: "auto"
 ```
 
-### Custom OpenAI-Compatible Providers
+### Environment Variables
 
-For local models (Ollama, vLLM, LM Studio), use `provider: "custom_openai"`:
+API keys and model config can be set via env vars (priority over YAML):
+
+| Env Var | Maps to |
+|---|---|
+| `OPENAI_API_KEY` | `api_keys.openai` |
+| `ANTHROPIC_API_KEY` | `api_keys.anthropic` |
+| `GOOGLE_API_KEY` | `api_keys.gemini` |
+| `OLLAMA_API_KEY` | `api_keys.ollama` |
+| `MAGS_MODEL` | Override model for all roles |
+| `MAGS_PROVIDER` | Override provider for all roles |
+| `MAGS_MODEL_CODER` | Override model for the coder role only |
+
+### Local Providers
+
+For local models (Ollama, vLLM, LM Studio), use `provider: "local"` (or legacy `"custom_openai"`):
 
 ```yaml
 reviewers:
-  - provider: "custom_openai"
-    model: "llama3:70b"
-    base_url: "http://localhost:11434/v1"
-    api_key: "ollama"
+  - provider: "local"
+    model: "Qwen2.5-72B"
+    base_url: "http://localhost:8000/v1"
+```
+
+Ollama can also be configured directly:
+
+```yaml
+reviewers:
+  - provider: "ollama"
+    model: "llama3.1"
+    base_url: "http://localhost:11434"   # optional, defaults to this
+    num_ctx: 8192                        # optional context window
 ```
 
 ---
 
 ## Architecture
 
-### Build Graph Per Module
+### Agent Loop (per module)
 
-Each module has its own LangGraph with the following nodes:
+Each module runs its own LangGraph:
 
 ```
-coder_node → tester_node → log_checker_node → reviewer_node → router
-     ^                                                    │
-     └────────────────────────────────────────────────────┘
+session_start → coder → tester → run_tests → run_linters → log_checker
+     ↑                                                         │
+     │         ┌───────────────────────────────────────────────┘
+     │         ▼
+     │    check_convergence → multi_llm_review → (approved? → session_end)
+     │         │                       │
+     │    (unchanged → fail)      (revise → back to coder)
+     │
+     └── log_checker routes: fix_source → coder, fix_tests → tester
 ```
 
-1. **Coder** — Generates or fixes module code. Receives: description, dependency source code, existing code, error summaries.
-2. **Tester** — Generates or fixes tests. Runs tests in isolated container. Receives: module code, dependency code, existing tests, test results.
-3. **LogChecker** — Analyzes test/lint output. Determines error location (`SOURCE_CODE` or `TEST_CODE`). Routes to the appropriate fixer.
-4. **Reviewers** — Multiple LLM agents review code in parallel. Aggregate feedback is fed back to the Coder for revision.
-5. **Router** — Decides the next step:
-   - `coder_node` — code needs fixing
-   - `tester_node` — tests need fixing
-   - `reviewer_node` — code is correct, needs review
-   - `__end__` — converged, all checks pass
+**Nodes:**
 
-### Parallelism
+1. **Coder** — LLM writes module code from the spec + dependency source. On fix cycles, receives error summaries + reviewer comments + existing code.
+2. **Tester** — LLM writes pytest tests. On fix cycles, receives the diagnosis + broken tests.
+3. **run_tests / run_linters** — Executes pytest/flake8/mypy in an isolated container mounted on the module's git worktree.
+4. **LogChecker** — LLM analyzes test/lint output, outputs JSON `{location, summary}`. Routes to coder (source error) or tester (test error).
+5. **check_convergence** — SHA-256 of code + tests. If unchanged from previous iteration, the module fails (prevents infinite loops without progress).
+6. **multi_llm_review** — N reviewers run concurrently via `asyncio.gather`. Approval requires a strict majority of all configured reviewers to reply `LGTM`. Skipped reviewers (API failure) are neutral — never counted as a vote.
 
-Modules with satisfied dependencies build **concurrently** in waves:
+### LLM Reliability
+
+- **Transient errors** (rate limits, 503s, server disconnects) are retried with exponential backoff (5 attempts, 4–60s waits).
+- **Hard failures** (auth, quota) fail the task with a real, logged error — no silent stub fallbacks. A failed module's last good code is saved to the artifact DB for inspection.
+- **Reviewer quorum** — a skipped reviewer is neutral, not an approval. Approval requires `len(approvals) * 2 > len(reviewers)`. A partial API outage can never grant a 1-of-N approval.
+
+### DAG Parallelism
+
+Modules with satisfied dependencies build concurrently in waves:
 
 ```
 Wave 1:  [types.py] [config.py] [constants.py]     ← 3 parallel
@@ -424,64 +384,101 @@ Wave 3:  [engine.py]                                ← 1
 Wave 4:  [pipeline.py] [cli.py]                     ← 2 parallel
 ```
 
-Each module runs in its own:
+Each module gets its own:
 - **Git worktree** (isolated from other modules)
 - **LangGraph** (isolated state)
 - **Container** (isolated test environment)
+- **Log file** (`.mags-codedev/logs/<hash>.log`)
+
+If a module fails, its dependents are marked blocked (not built), but independent modules in other waves still run.
+
+### Spec-Aware Rebuilds
+
+Completed modules are cached by a location hash (for log/worktree continuity) **and** a spec content hash (description + dependencies). Editing a module's `description` or `dependencies` in the manifest automatically invalidates it on the next `build` — no `--force-fresh` needed. Use `--module <location>` to rerun a single task.
 
 ### Convergence Detection
 
-A module is marked as converged when:
-- Code hash matches previous iteration's code hash AND tests pass AND lint passes
-- Test hash matches previous iteration's test hash (prevents test-only loops)
-- Review rounds are exhausted or all reviewers approve
-
-If either the code or tests change without progress, the module is marked as failed.
+A module is marked as failed when the code or test hash is **identical** to the previous iteration — meaning the agent loop isn't making progress. This catches cases where the coder keeps regenerating the same broken code. The iteration budget (`max_test_fix_iterations`) and review budget (`max_review_rounds`) are separate.
 
 ### Token Tracking
 
-All LLM calls are tracked via `TokenCounter(BaseCallbackHandler)`. Usage is stored in the SQLite database and can be viewed with `mags-codedev tokens`.
+All LLM calls are tracked via `TokenLoggingCallbackHandler` (persisted to SQLite) and `TokenCounter` (in-memory for the live status tree). View with `mags-codedev tokens`.
+
+### Conversation Logging
+
+Module logs (`.mags-codedev/logs/<hash>.log`) contain the full LLM conversation:
+
+- **INFO (default)** — concise exchange summary: task narrative, payload line-counts (code/tests/deps elided to counts, not dumped), and inter-agent diagnostics (error summaries, reviewer comments). This is the "chat between LLMs" without file contents.
+- **DEBUG (`-v`)** — full prompt + full response, including embedded file contents.
+
+This lets you inspect a failed task's LLM conversation without wading through large code dumps — unless you want them.
+
+---
+
+## JSONL Output (`--json`)
+
+When `mags-codedev build --json` is used, the CLI emits one JSON object per line (JSONL) to stdout instead of the Rich Live tree. This is consumed by the OMP extension for streaming progress, but can also be used by CI pipelines or `jq`.
+
+```jsonl
+{"ts":"...","event":"build_start","manifest":"manifest.json","total_modules":5,"already_built":2}
+{"ts":"...","event":"module_start","location":"src/pricing.py","hash":"a1b2...","session":1}
+{"ts":"...","event":"module_step","location":"src/pricing.py","step":"coder","iteration":1}
+{"ts":"...","event":"module_end","location":"src/pricing.py","status":"Success: Merged to Main","iterations":2,"log_file":".mags/logs/a1b2.log","tokens_in":4200,"tokens_out":1800}
+{"ts":"...","event":"build_end","total_modules":5,"succeeded":4,"failed":1,"blocked":0,"tokens_in":45000,"tokens_out":12000}
+```
+
+| Event | Key fields |
+|---|---|
+| `build_start` | `manifest`, `total_modules`, `already_built` |
+| `module_start` | `location`, `hash`, `session` |
+| `module_step` | `location`, `step`, `iteration` |
+| `module_tokens` | `location`, `tokens_in`, `tokens_out` |
+| `module_end` | `location`, `status`, `iterations`, `log_file`, `tokens_in`, `tokens_out` |
+| `wave_end` | `succeeded`, `failed` |
+| `build_end` | `total_modules`, `succeeded`, `failed`, `blocked`, `tokens_in`, `tokens_out` |
+
+---
+
+## OMP Extension
+
+The `mags-codedev-extension/` directory contains an OMP extension that wraps the CLI as structured tools with streaming JSONL progress.
+
+### Tools
+
+| Tool | CLI equivalent | Key params |
+|---|---|---|
+| `mags_init` | `mags-codedev init` | `interactive` |
+| `mags_build` | `mags-codedev build` | `module`, `force_fresh`, `json`, `verbose` |
+| `mags_test` | `mags-codedev test` | `verbose` |
+| `mags_debug` | `mags-codedev debug` | `error_msg`, `module_location` |
+| `mags_tokens` | `mags-codedev tokens` | — |
+| `mags_list_models` | `mags-codedev list-models` | `config_path` |
+| `mags_clean` | `mags-codedev clean` | `force` |
+
+When `mags_build` is called from OMP, it defaults to `json=true` — the CLI runs with `--json`, the extension parses JSONL events, and streams `module_step` progress to the OMP TUI via `onUpdate`. The final `build_end` event is returned as structured `details` so the agent can act on failures programmatically.
+
+A `session_start` hook auto-detects a MAGs-CodeDev workspace (`.mags-codedev/manifest.json`) and notifies the user.
 
 ---
 
 ## Test Environment
 
-### Running Unit Tests
-
-The package includes a pytest test suite:
+### Running the MAGs-CodeDev test suite
 
 ```bash
-# Run all tests
 python3 -m pytest tests/ -v
-
-# Run specific test file
-python3 -m pytest tests/test_coder_node.py -v
-
-# Run with coverage
 python3 -m pytest tests/ --cov=mags_codedev --cov-report=term-missing
 ```
 
 ### Container Test Environment
 
 Module tests run in isolated containers. The framework:
-
-1. Detects available container runtime (podman > docker > apptainer > singularity)
-2. Builds a container image from the project's dependencies
+1. Detects the container runtime (podman > docker > apptainer > singularity)
+2. Builds an image from the project's `requirements.txt` + language toolchain
 3. Runs pytest/flake8/mypy inside the container
 4. Mounts the worktree so the container sees the module code
 
 To test locally without containers, set `test_runner: "local"` in config.
-
-### Debugging Container Issues
-
-```bash
-# Check which runtime is detected
-python3 -c "from mags_codedev.utils.docker_ops import _get_container_runtime; print(_get_container_runtime())"
-
-# Check if the container image exists
-podman images | grep mags-dev-env
-docker images | grep mags-dev-env
-```
 
 ---
 
@@ -505,7 +502,7 @@ A JSON array of module objects. Order does not matter — the build system compu
 - `dependencies` must reference `location` values of other modules in the manifest
 - Cycles are detected and rejected before the build starts
 - Modules with no dependencies build in the first wave
-- Manifest description edits do **not** invalidate already-built modules (hash is based on `location` only)
+- Editing a module's `description` or `dependencies` invalidates that module on the next `build` (spec-aware rebuild). The location-based hash is preserved for log/worktree continuity.
 
 ---
 
@@ -513,40 +510,56 @@ A JSON array of module objects. Order does not matter — the build system compu
 
 ### "Module already built" but code is stale
 
-The build system caches completed modules by their `location` hash. To force a rebuild:
+Spec edits auto-invalidate. To force a full rebuild:
 
 ```bash
 mags-codedev build --force-fresh
 ```
 
-### Container build fails
-
-Check that your container runtime is installed and running:
+To rerun a single module:
 
 ```bash
-podman info        # or: docker info
+mags-codedev build --module src/pricing.py
 ```
 
-If the image fails to build, check `system_dependencies` in config.yaml.
+### Module failed — how to inspect and fix
+
+```bash
+# Find the log file (printed in the build output, or in .mags-codedev/logs/)
+# The log has the full LLM conversation (file contents elided at INFO level)
+
+# Debug with the log (auto-detects the module)
+mags-codedev debug .mags-codedev/logs/<hash>.log
+
+# Or pass raw error text + module location
+mags-codedev debug "AssertionError in pricing calculation" --mod src/pricing.py
+
+# After fixing, rerun the task
+mags-codedev build --module src/pricing.py
+```
+
+### Container build fails
+
+```bash
+podman info   # or: docker info
+# Check system_dependencies in config.yaml
+```
 
 ### LLM API errors
 
-Check `api_keys` in config.yaml. Verify the provider/model combination is valid:
-
 ```bash
-mags-codedev list-models
+mags-codedev list-models    # verify provider/model combinations
 ```
 
 ### Module stuck in infinite loop
 
-Check `max_test_fix_iterations` in config. If the code and tests are both changing but not converging, the module will be marked as failed after the iteration budget is exhausted. Use `mags-codedev debug` to investigate.
+The convergence check fails a module when code/tests stop changing between iterations. If you hit `max_test_fix_iterations` or `max_review_rounds`, check the module log with `mags-codedev debug`, fix the issue, and rerun with `--module`.
 
-### Logs
-
-Module logs are stored in `.mags-codedev/logs/`. Enable trace logging:
+### Enable full LLM chat in logs
 
 ```bash
-mags-codedev build -vv
+mags-codedev build -v        # debug: full prompts + responses + file contents
+mags-codedev build -vv       # trace: token usage per call
 ```
 
 ---

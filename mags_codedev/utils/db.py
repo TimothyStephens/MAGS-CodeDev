@@ -52,7 +52,6 @@ def init_db(base_dir: str = ".mags-codedev") -> None:
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
-
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS token_usage (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,6 +60,14 @@ def init_db(base_dir: str = ".mags-codedev") -> None:
                 in_tokens INTEGER,
                 out_tokens INTEGER,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS module_tokens (
+                location TEXT PRIMARY KEY,
+                total_in INTEGER DEFAULT 0,
+                total_out INTEGER DEFAULT 0
             )
         """)
 
@@ -164,9 +171,11 @@ def hash_spec_content(spec: dict) -> str:
 def is_function_built(spec: dict, base_dir: str = ".mags-codedev") -> bool:
     """Check whether *spec* was built AND its spec content is unchanged.
 
-    A task is considered built only if a completed_functions row exists for its
-    location hash AND the stored spec-content hash matches the current spec.
-    Editing the description or dependencies invalidates the task so it rebuilds.
+    A task is considered built if EITHER:
+    - a completed_functions row exists with matching spec_content_hash, OR
+    - the module file already exists on disk (manually merged / pre-built).
+      In this case the module is auto-registered as built with the current
+      spec content hash, so future spec edits will invalidate it.
     """
     _ensure_dir(base_dir)
     func_hash = hash_spec(spec)
@@ -178,11 +187,18 @@ def is_function_built(spec: dict, base_dir: str = ".mags-codedev") -> bool:
             (func_hash,),
         )
         row = cursor.fetchone()
-        if row is None:
-            return False
-        stored = row[0]
-        # NULL (pre-migration row): rebuild once to populate the content hash.
-        return stored is not None and stored == content_hash
+        if row is not None:
+            stored = row[0]
+            return stored is not None and stored == content_hash
+
+    # DB says not built — check if the file exists on disk (manual merge).
+    location = spec.get("location", "")
+    if location and os.path.exists(location) and os.path.getsize(location) > 0:
+        # Auto-register so future runs skip the disk check.
+        mark_function_built(location, spec, base_dir=base_dir)
+        return True
+
+    return False
 
 
 def mark_function_built(
@@ -609,9 +625,53 @@ def get_completed_status(
         return cursor.fetchall()
 
 
+
+# ------------------------------------------------------------------ #
+#  Per-Module Token Totals (cumulative across restarts)
+# ------------------------------------------------------------------ #
+
+def add_module_tokens(
+    location: str,
+    tokens_in: int,
+    tokens_out: int,
+    base_dir: str = ".mags-codedev",
+) -> None:
+    """Add token usage to a module's cumulative total (persists across restarts)."""
+    _ensure_dir(base_dir)
+    with sqlite3.connect(_db_path(base_dir), timeout=10) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR IGNORE INTO module_tokens (location, total_in, total_out) "
+            "VALUES (?, 0, 0)",
+            (location,),
+        )
+        cursor.execute(
+            "UPDATE module_tokens SET total_in = total_in + ?, "
+            "total_out = total_out + ? WHERE location = ?",
+            (tokens_in, tokens_out, location),
+        )
+        conn.commit()
+
+
+def get_module_tokens(
+    location: str,
+    base_dir: str = ".mags-codedev",
+) -> tuple[int, int]:
+    """Return (total_in, total_out) cumulative token usage for *location*."""
+    _ensure_dir(base_dir)
+    with sqlite3.connect(_db_path(base_dir), timeout=10) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT total_in, total_out FROM module_tokens WHERE location = ?",
+            (location,),
+        )
+        row = cursor.fetchone()
+        return (row[0], row[1]) if row else (0, 0)
+
 __all__ = [
     "init_db",
     "hash_spec",
+    "hash_spec_content",
     "is_function_built",
     "mark_function_built",
     "add_iterations_to_module",
@@ -625,5 +685,7 @@ __all__ = [
     "TokenCounter",
     "log_iteration",
     "get_completed_status",
+    "add_module_tokens",
+    "get_module_tokens",
 ]
 

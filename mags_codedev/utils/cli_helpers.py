@@ -6,16 +6,89 @@ from typing import Optional
 
 
 
-def format_llm_error(error: Exception) -> str:
-    """Format LLM error for display."""
+def format_llm_error(error: Exception, role: str = "", provider: str = "") -> str:
+    """Format LLM error for display with actionable guidance.
+
+    Maps common SDK/library errors to concise, user-actionable messages.
+    When *role* and *provider* are known, includes the relevant config key
+    and environment variable name so the user knows exactly what to fix.
+    """
     msg = str(error)
-    if "rate limit" in msg.lower():
-        return "Rate limit hit. Waiting before retry..."
-    if "authentication" in msg.lower() or "api key" in msg.lower():
-        return "Authentication error. Check API key configuration."
-    if "context length" in msg.lower() or "max tokens" in msg.lower():
-        return "Context length exceeded. Consider reducing prompt size."
+    msg_lower = msg.lower()
+
+    # --- credential / auth failures ---
+    if any(
+        kw in msg_lower
+        for kw in (
+            "missing credentials", "missing api key", "api key",
+            "authentication", "unauthorized", "invalid api key",
+        )
+    ):
+        hint = _auth_hint(role, provider)
+        return f"Missing or invalid API key{hint}"
+
+    # --- placeholder / obviously-fake keys ---
+    if any(marker in msg for marker in ("sk-...", "sk-ant-...", "/looks")):
+        hint = _auth_hint(role, provider)
+        return f"Placeholder API key detected in config{hint}"
+
+    # --- rate limiting ---
+    if "rate limit" in msg_lower:
+        return "Rate limit hit. Wait before retrying."
+
+    # --- context / token limits ---
+    if any(kw in msg_lower for kw in ("context length", "max tokens", "token limit")):
+        return "Context length exceeded. Reduce prompt size or use a model with a larger context window."
+
+    # --- network / connectivity ---
+    if any(kw in msg_lower for kw in ("connection", "timeout", "refused", "unreachable", "network")):
+        return f"Could not reach the model endpoint. Check your network and base_url."
+
+    # --- pydantic / validation errors (often missing required fields) ---
+    if "validation error" in msg_lower:
+        # Extract the field name if possible
+        field = ""
+        for word in msg.split():
+            if word.isidentifier() and "api_key" in word.replace("-", "_"):
+                field = word
+                break
+        hint = _auth_hint(role, provider)
+        if field:
+            return f"Configuration validation failed for '{field}'{hint}"
+        return f"Configuration validation failed{hint}"
+
+    # --- fallback: show the raw message ---
     return f"LLM error: {msg}"
+
+
+_PROVIDER_KEY_MAP = {
+    "openai": ("openai", "OPENAI_API_KEY"),
+    "anthropic": ("anthropic", "ANTHROPIC_API_KEY"),
+    "google": ("gemini", "GOOGLE_API_KEY"),
+    "mistral": ("mistral", "MISTRAL_API_KEY"),
+    "cohere": ("cohere", "COHERE_API_KEY"),
+    "ollama": ("ollama", "OLLAMA_API_KEY"),
+    "local": ("openai", "OPENAI_API_KEY"),
+    "custom_openai": ("openai", "OPENAI_API_KEY"),
+}
+
+
+def _auth_hint(role: str, provider: str) -> str:
+    """Build a config/env-var hint string for credential errors."""
+    cfg_key, env_var = _PROVIDER_KEY_MAP.get(
+        provider.lower(), (None, None)
+    )
+    parts = []
+    if role:
+        parts.append(f" for {role}")
+    hints = []
+    if cfg_key:
+        hints.append(f"config.api_keys.{cfg_key}")
+    if env_var:
+        hints.append(f"${env_var}")
+    if hints:
+        parts.append(f" (set {' or '.join(hints)})")
+    return "".join(parts) if parts else ""
 
 
 def _open_in_editor(path: str) -> Optional[str]:

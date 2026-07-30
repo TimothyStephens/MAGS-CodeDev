@@ -128,7 +128,12 @@ def resolve_base_dir(config_path: Path) -> str:
 # -------------------------------------------------------------------
 
 def validate_config_connections(config_path: Path) -> bool:
-    """Verifies that the API keys and Models defined in config.yaml are valid."""
+    """Verifies that the API keys and Models defined in config.yaml are valid.
+
+    Separates **construction errors** (bad config, missing keys) from
+    **invoke errors** (network, rate limits) so the user gets a precise
+    diagnosis instead of a raw SDK traceback.
+    """
     from langchain_core.messages import HumanMessage
     from mags_codedev.utils.config_parser import get_llm, get_reviewer_llms
     from mags_codedev.utils.cli_helpers import format_llm_error
@@ -139,40 +144,97 @@ def validate_config_connections(config_path: Path) -> bool:
     console.print(Panel("[bold cyan]Validating LLM Connections...[/bold cyan]"))
     logger.debug("Starting validation of LLM connections.")
 
-    all_passed = True
+    failures: list[tuple[str, str]] = []  # (label, error_message)
     roles = ["coder", "tester", "log_checker"]
 
     for role in roles:
+        label = role
+        provider = _role_provider(role, config_path)
         try:
             llm = get_llm(role, config_path)
             model_name = getattr(llm, 'model_name', getattr(llm, 'model', 'unknown'))
-            console.print(f"Checking [bold]{role}[/bold] ({model_name})...", end=" ")
+            console.print(f"Checking [bold]{label}[/bold] ({model_name})...", end=" ")
             llm.invoke([HumanMessage(content="Test")])
             console.print("[green]OK[/green]")
-            logger.debug(f"Connection verified for {role} ({model_name}).")
+            logger.debug(f"Connection verified for {label} ({model_name}).")
         except Exception as e:
             console.print("[red]FAILED[/red]")
-            console.print(f"  [red]Error: {format_llm_error(e)}[/red]")
-            logger.exception(f"Connection failed for {role}")
-            all_passed = False
+            err_msg = format_llm_error(e, role=role, provider=provider)
+            console.print(f"  [red]Error: {err_msg}[/red]")
+            logger.warning(f"Connection failed for {label}: {err_msg}")
+            failures.append((label, err_msg))
 
     try:
         reviewers = get_reviewer_llms(config_path)
         for i, llm in enumerate(reviewers):
+            label = f"Reviewer {i + 1}"
+            provider = _infer_provider(llm)
             try:
                 model_name = getattr(llm, 'model_name', getattr(llm, 'model', 'unknown'))
-                console.print(f"Checking [bold]Reviewer {i+1}[/bold] ({model_name})...", end=" ")
+                console.print(f"Checking [bold]{label}[/bold] ({model_name})...", end=" ")
                 llm.invoke([HumanMessage(content="Test")])
                 console.print("[green]OK[/green]")
-                logger.debug(f"Connection verified for Reviewer {i+1} ({model_name}).")
+                logger.debug(f"Connection verified for {label} ({model_name}).")
             except Exception as e:
                 console.print("[red]FAILED[/red]")
-                console.print(f"  [red]Error: {format_llm_error(e)}[/red]")
-                logger.exception(f"Connection failed for Reviewer {i+1}")
-                all_passed = False
+                err_msg = format_llm_error(e, role="reviewer", provider=provider)
+                console.print(f"  [red]Error: {err_msg}[/red]")
+                logger.warning(f"Connection failed for {label}: {err_msg}")
+                failures.append((label, err_msg))
     except Exception as e:
-        console.print(f"[red]Error loading reviewers: {e}[/red]")
-        logger.exception("Error loading reviewers")
-        all_passed = False
+        err_msg = format_llm_error(e)
+        console.print(f"[red]Error loading reviewers: {err_msg}[/red]")
+        logger.warning(f"Error loading reviewers: {err_msg}")
+        failures.append(("reviewers", err_msg))
 
-    return all_passed
+    if failures:
+        _print_validation_summary(failures)
+
+    return not failures
+
+
+_KNOWN_LLM_CLASSES = {
+    "ChatOpenAI": "openai",
+    "ChatAnthropic": "anthropic",
+    "ChatGoogleGenerativeAI": "google",
+    "ChatOllama": "ollama",
+    "ChatMistralAI": "mistral",
+    "ChatCohere": "cohere",
+}
+
+
+def _infer_provider(llm) -> str:
+    """Infer the provider name from an instantiated LLM object."""
+    cls_name = type(llm).__name__
+    return _KNOWN_LLM_CLASSES.get(cls_name, cls_name.lower().replace("chat", ""))
+
+
+def _role_provider(role: str, config_path: Path) -> str:
+    """Read the provider for a role from the config (before LLM construction)."""
+    try:
+        from mags_codedev.utils.config_parser import load_config
+        config = load_config(config_path)
+        models_config = config.get("models", {})
+        build_config = models_config.get("build_workflow", {})
+        interactive_config = models_config.get("interactive_commands", {})
+        model_config = (
+            build_config.get(role)
+            or interactive_config.get(role)
+            or models_config.get(role)
+        )
+        if model_config:
+            return model_config.get("provider", "")
+    except Exception:
+        pass
+    return ""
+
+
+def _print_validation_summary(failures: list[tuple[str, str]]) -> None:
+    """Print a compact summary of all validation failures."""
+    lines = ["\n[bold red]Validation failed[/bold red] for the following roles:"]
+    for label, err in failures:
+        lines.append(f"  \u2022 [bold]{label}[/bold]: {err}")
+    lines.append("")
+    lines.append("Fix the issues above, or use [cyan]--skip-validation[/cyan] to bypass checks.")
+    for line in lines:
+        console.print(line)

@@ -96,17 +96,18 @@ def _exchange_summary(state: ModuleState, params: dict, narrative: str) -> str:
 
     payloads = " | ".join(bits) if bits else "no payloads"
 
-    # Inter-agent diagnostics ARE the chat — surface them, not the file dumps.
+    # Inter-agent diagnostics ARE the chat — surface them in full.
     diag = []
     err = state.get("test_error_summary", "")
     if err:
-        diag.append(f"errors: {err[:300]}")
+        diag.append(f"errors: {err}")
     reviews = state.get("review_comments", [])
     if reviews:
-        preview = reviews[0][:200] if reviews else ""
-        diag.append(f"reviews: {len(reviews)} (e.g. {preview!r})")
+        diag.append(f"reviews: {len(reviews)} comment(s)")
+        for i, r in enumerate(reviews):
+            preview = r[:300] if len(r) > 300 else r
+            diag.append(f"  review[{i}]: {preview}")
     diagnostics = " | ".join(diag) if diag else "diagnostics: none"
-
     return f"{payloads} — {diagnostics}"
 
 

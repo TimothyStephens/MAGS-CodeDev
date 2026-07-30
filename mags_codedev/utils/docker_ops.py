@@ -423,13 +423,14 @@ def test_node(state: ModuleState) -> dict:
     if backend:
         command = backend.test_command(Path(test_file), state.get("module_location", ""))
     else:
-        command = f"python3 -m pytest {test_file} -v --tb=short"
+        command = f"python3 -m pytest {test_file} -v --tb=short --cov={state.get('module_location', '')} --cov-report=term-missing"
 
     # Write code/tests to worktree before running
     func_logger = _get_func_logger(state)
     _write_worktree_files(state, func_logger)
 
     logs = _run_in_environment(state, command)
+    func_logger.info("─── Test Results ───\n%s", logs)
     return {"test_results": logs}
 
 
@@ -443,7 +444,8 @@ def linter_node(state: ModuleState) -> dict:
     else:
         command = (
             f"python3 -m flake8 {source_file} --max-line-length=120 --extend-ignore=E302,E303,E305; "
-            f"python3 -m mypy {source_file} --ignore-missing-imports"
+            f"python3 -m mypy {source_file} --ignore-missing-imports; "
+            f"bandit {source_file} -s B101,B104 -q"
         )
 
     # Write code/tests to worktree before running
@@ -451,6 +453,7 @@ def linter_node(state: ModuleState) -> dict:
     _write_worktree_files(state, func_logger)
 
     logs = _run_in_environment(state, command)
+    func_logger.info("─── Lint Output ───\n%s", logs)
     return {"lint_results": logs}
 
 __all__ = [

@@ -4,6 +4,7 @@ import json
 
 from mags_codedev.state import ModuleState
 from mags_codedev.utils.llm_call import build_context_blocks, call_llm
+from mags_codedev.utils.logger import get_dual_loggers
 
 
 def log_checker_node(state: ModuleState) -> dict:
@@ -81,6 +82,15 @@ def log_checker_node(state: ModuleState) -> dict:
         # Malformed LLM output: blame the source conservatively.
         error_location = "SOURCE_CODE"
         error_summary = response_content[:500] + ("..." if len(response_content) > 500 else "")
+    func_logger, _ = get_dual_loggers(
+        state.get("log_filepath"),
+        base_dir=state.get("base_dir", ".mags-codedev"),
+        log_level=state.get("log_level", "info"),
+    )
+    func_logger.info(
+        "─── Diagnosis ───\nLocation: %s\nSummary: %s",
+        error_location or "NONE", error_summary,
+    )
 
     return {
         "test_error_summary": error_summary,

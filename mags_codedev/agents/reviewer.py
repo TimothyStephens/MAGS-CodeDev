@@ -23,9 +23,17 @@ async def _get_review(llm, state: ModuleState) -> str:
     system_prompt = (
         "You are a strict Code Reviewer.\n"
         "Review this code for: correctness, edge case handling, naming conventions,\n"
-        "code complexity, security flaws, performance bottlenecks, and best practices.\n"
+        "code complexity, security flaws, performance bottlenecks, and best practices.\n\n"
+        "ALSO check documentation quality:\n"
+        "- Does every public function/class have a docstring (Google style)?\n"
+        "- Are non-obvious logic and business rules commented?\n"
+        "- Is the file organized clearly (imports, constants, classes, functions)?\n"
+        "- Are there unused imports or dead code?\n"
+        "- Do all functions have type hints?\n\n"
         "If the code is perfect, reply EXACTLY with 'LGTM'.\n"
-        "If there are issues, list them clearly with specific line references."
+        "If there are issues, list them clearly with specific line references.\n"
+        "Do NOT flag style preferences — only flag things that affect\n"
+        "correctness, maintainability, or readability."
     )
     # Shared context blocks (project instructions + dependency source).
     project_instructions_block, dependency_context = build_context_blocks(state)
@@ -100,8 +108,9 @@ async def _get_review(llm, state: ModuleState) -> str:
                 for block in content
             )
 
-        resp_logger.debug(
-            f"[Session {session}, Review Round {review_round}] Reviewer ({model_name}) Response:\n{content}"
+        resp_logger.info(
+            "[Session %d, Review Round %d] Reviewer (%s) full review:\n%s",
+            session, review_round, model_name, content,
         )
     except Exception as e:
         func_logger.warning(
@@ -152,6 +161,11 @@ async def multi_llm_review_node(state: ModuleState) -> dict:
         r for r in successful if not re.search(r"\bLGTM\b", r, re.IGNORECASE)
     ]
     if actionable_comments:
+        func_logger.info(
+            "─── Review Decision ───\n%d/%d reviewers gave actionable feedback "
+            "(%d skipped). Sending back to coder for revision.",
+            len(actionable_comments), len(llms), len(skipped),
+        )
         return {
             "review_comments": actionable_comments,
             "status": "in_progress",
@@ -163,6 +177,11 @@ async def multi_llm_review_node(state: ModuleState) -> dict:
     # (quorum unmet) and we ask for another round.
     approvals = [r for r in successful if re.search(r"\bLGTM\b", r, re.IGNORECASE)]
     if len(approvals) * 2 > len(llms):
+        func_logger.info(
+            "─── Review Decision ───\n%d/%d reviewers approved (LGTM). "
+            "Strict majority met — code accepted.",
+            len(approvals), len(llms),
+        )
         return {
             "review_comments": [],
             "status": "success",

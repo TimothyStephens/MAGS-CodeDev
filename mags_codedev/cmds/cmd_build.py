@@ -21,13 +21,15 @@ from mags_codedev.utils.db import (
     hash_spec,
     add_iterations_to_module, get_total_iterations,
     save_artifact, load_artifact, load_dependency_codes, TokenCounter,
+    add_module_tokens, get_module_tokens, get_token_summary,
 )
+from mags_codedev.utils.status_reporter import JsonStatusReporter
 from mags_codedev.utils.cli_common import (
     resolve_base_dir,
     find_default_config_path,
     _CONFIG_HELP_TEXT,
 )
-from mags_codedev.utils.logger import setup_logger, logger, get_function_logger
+from mags_codedev.utils.logger import setup_logger, logger, get_function_logger, suppress_console_logging
 from mags_codedev.utils.config_parser import load_config
 from mags_codedev.utils.display import generate_status_table
 from mags_codedev.utils.git_ops import (
@@ -47,6 +49,7 @@ async def process_module(
     initial_error: str | None = None,
     force_fresh: bool = False,
     log_level: str = "info",
+    reporter: JsonStatusReporter | None = None,
 ):
     """Handles the full lifecycle of a single module generation in isolation."""
     worktree_path = None
@@ -76,6 +79,9 @@ async def process_module(
                 "worktree": None,
                 "step": "Init",
             }
+
+            if reporter:
+                reporter.module_start(module_location, func_hash, session=1)
 
             # Validate spec
             if 'location' not in spec:
@@ -247,12 +253,32 @@ async def process_module(
                         status_dict[module_location]["iterations"] = state_update["iteration_count"]
                     if state_update:
                         final_state.update(state_update)
+                    if reporter:
+                        reporter.module_step(
+                            module_location, node_name,
+                            state_update.get("iteration_count", 0) if state_update else 0,
+                        )
 
-            # Record tokens used
+            # Record tokens used (cumulative with past sessions)
             tokens = token_counter.total
-            status_dict[module_location]["tokens_in"] = tokens["in"]
-            status_dict[module_location]["tokens_out"] = tokens["out"]
+            past_in = status_dict[module_location].get("past_tokens_in", 0)
+            past_out = status_dict[module_location].get("past_tokens_out", 0)
+            status_dict[module_location]["tokens_in"] = past_in + tokens["in"]
+            status_dict[module_location]["tokens_out"] = past_out + tokens["out"]
             status_dict[module_location]["step"] = "Complete"
+
+            # Persist this run's tokens for cumulative tracking across restarts
+            await asyncio.to_thread(
+                add_module_tokens, module_location, tokens["in"], tokens["out"],
+                base_dir=base_dir,
+            )
+
+            if reporter:
+                reporter.module_tokens(
+                    module_location,
+                    past_in + tokens["in"],
+                    past_out + tokens["out"],
+                )
 
             # Persist iterations
             iterations_this_run = final_state.get("iteration_count", 0)
@@ -348,6 +374,16 @@ async def process_module(
             elif success:
                 status_dict[module_location]["status"] = "Failed: Merge Conflict"
 
+            if reporter:
+                reporter.module_end(
+                    module_location,
+                    status_dict[module_location]["status"],
+                    status_dict[module_location].get("iterations", 0),
+                    log_file=status_dict[module_location].get("log_file", ""),
+                    tokens_in=status_dict[module_location].get("tokens_in", 0),
+                    tokens_out=status_dict[module_location].get("tokens_out", 0),
+                )
+
     except Exception as e:
         effective_logger = func_logger if func_logger else logger
         effective_logger.exception(f"Error processing {module_location}")
@@ -373,8 +409,18 @@ async def process_module(
                     effective_logger.warning("Could not save partial artifacts after failure.")
             if token_counter is not None:
                 tokens = token_counter.total
-                status_dict[module_location]["tokens_in"] = tokens["in"]
-                status_dict[module_location]["tokens_out"] = tokens["out"]
+                past_in = status_dict[module_location].get("past_tokens_in", 0)
+                past_out = status_dict[module_location].get("past_tokens_out", 0)
+                status_dict[module_location]["tokens_in"] = past_in + tokens["in"]
+                status_dict[module_location]["tokens_out"] = past_out + tokens["out"]
+                # Persist partial tokens so they survive restarts
+                try:
+                    await asyncio.to_thread(
+                        add_module_tokens, module_location,
+                        tokens["in"], tokens["out"], base_dir=base_dir,
+                    )
+                except Exception:
+                    pass
 
         if worktree_path:
             async with git_lock:
@@ -384,7 +430,7 @@ async def process_module(
                 )
 
 
-def _run_single_module(target, spec, module_map, config_path, base_dir, log_level: str = "info"):
+def _run_single_module(target, spec, module_map, config_path, base_dir, log_level: str = "info", json_output: bool = False):
     """Force-rebuild a single module via the graph with a live status tree.
 
     Used by ``build --module <location>`` to rerun one task after a manual fix
@@ -395,48 +441,64 @@ def _run_single_module(target, spec, module_map, config_path, base_dir, log_leve
     artifact_data = load_artifact(target, base_dir=base_dir)
     status_dict = {
         target: {
-            "status": "Pending",
+            "status": "Queued",
             "iterations": 0,
             "hash": hash_spec(spec),
             "step": "-",
             "tokens_in": 0,
             "tokens_out": 0,
+            "past_tokens_in": get_module_tokens(target, base_dir=base_dir)[0],
+            "past_tokens_out": get_module_tokens(target, base_dir=base_dir)[1],
             "has_artifact": artifact_data is not None,
             "artifact_hash": artifact_data.get("code_hash", "") if artifact_data else "",
         }
     }
-    console.print(Panel(f"[bold magenta]Rebuilding module '{target}'...[/bold magenta]"))
+    if not json_output:
+        console.print(Panel(f"[bold magenta]Rebuilding module '{target}'...[/bold magenta]"))
+    reporter = JsonStatusReporter(enabled=json_output)
+    reporter.build_start(str(config_path), 1, 0)
     graph = build_function_graph()
     semaphore = asyncio.Semaphore(1)
     git_lock = asyncio.Lock()
 
     async def _run():
-        with Live(
-            generate_status_table(status_dict, module_map), refresh_per_second=4
-        ) as live:
-            async def _update_ui():
-                while True:
-                    live.update(
-                        generate_status_table(dict(sorted(status_dict.items())), module_map)
-                    )
-                    await asyncio.sleep(0.25)
-
-            ui_task = asyncio.create_task(_update_ui())
+        if json_output:
             await process_module(
                 target, spec, status_dict, semaphore, git_lock, config_path,
-                force_fresh=True, graph=graph, log_level=log_level,
+                force_fresh=True, graph=graph, log_level=log_level, reporter=reporter,
             )
-            ui_task.cancel()
-            live.update(generate_status_table(status_dict, module_map))
+        else:
+            with suppress_console_logging():
+                with Live(
+                    generate_status_table(status_dict, module_map, base_dir=base_dir), refresh_per_second=4
+                ) as live:
+                    async def _update_ui():
+                        while True:
+                            live.update(
+                                generate_status_table(dict(sorted(status_dict.items())), module_map, base_dir=base_dir)
+                            )
+                            await asyncio.sleep(0.25)
+
+                    ui_task = asyncio.create_task(_update_ui())
+                    await process_module(
+                        target, spec, status_dict, semaphore, git_lock, config_path,
+                        force_fresh=True, graph=graph, log_level=log_level,
+                    )
+                    ui_task.cancel()
+                    live.update(generate_status_table(status_dict, module_map, base_dir=base_dir))
 
     asyncio.run(_run())
 
     info = status_dict[target]
-    if "Success" in info["status"]:
-        console.print(f"[green]✓ {target}: {info['status']}[/green]")
-    else:
-        console.print(f"[red]✗ {target}: {info['status']}[/red]")
-        console.print(f"  Log: [blue]{info.get('log_file', '')}[/blue]")
+    reporter.build_end(1, 1 if "Success" in info["status"] else 0, 0 if "Success" in info["status"] else 1, 0, info.get("tokens_in", 0), info.get("tokens_out", 0))
+    if not json_output:
+        if "Success" in info["status"]:
+            console.print(f"[green]✓ {target}: {info['status']}[/green]")
+        else:
+            console.print(f"[red]✗ {target}: {info['status']}[/red]")
+            console.print(f"  Log: [blue]{info.get('log_file', '')}[/blue]")
+            raise typer.Exit(1)
+    elif "Success" not in info["status"]:
         raise typer.Exit(1)
 
 
@@ -467,6 +529,10 @@ def build(
     module: Optional[str] = typer.Option(
         None, "--module",
         help="Build only this module (by location). Forces a rebuild even if already built.",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json",
+        help="Emit JSONL status events to stdout (for OMP extension / CI integration).",
     ),
 ):
     """Build all pending modules in the manifest using parallel multi-agent LangGraphs."""
@@ -537,7 +603,7 @@ def build(
                 f"Available: {', '.join(sorted(module_map)) or 'none'}[/red]"
             )
             raise typer.Exit(1)
-        _run_single_module(module, module_map[module], module_map, config_path, base_dir, log_level=log_level)
+        _run_single_module(module, module_map[module], module_map, config_path, base_dir, log_level=log_level, json_output=json_output)
         return
     built_modules = (
         set()
@@ -548,15 +614,21 @@ def build(
         }
     )
 
-    if len(built_modules) == len(module_map):
+    if not json_output:
+        if len(built_modules) == len(module_map):
+            console.print(
+                "[green]All modules in manifest are already built and verified![/green]"
+            )
+            raise typer.Exit(0)
+
         console.print(
-            "[green]All modules in manifest are already built and verified![/green]"
+            f"[cyan]Found {len(module_map)} total modules. {len(built_modules)} already built.[/cyan]"
         )
+    elif len(built_modules) == len(module_map):
         raise typer.Exit(0)
 
-    console.print(
-        f"[cyan]Found {len(module_map)} total modules. {len(built_modules)} already built.[/cyan]"
-    )
+    reporter = JsonStatusReporter(enabled=json_output)
+    reporter.build_start(str(manifest_path), len(module_map), len(built_modules))
 
     async def run_builds():
         failed_modules: set = set()
@@ -568,12 +640,14 @@ def build(
             # Check for artifact data (previous attempt)
             artifact_data = load_artifact(loc, base_dir=base_dir)
             status_dict[loc] = {
-                "status": "Pending",
+                "status": "Queued",
                 "iterations": 0,
                 "hash": hash_spec(spec),
                 "step": "-",
                 "tokens_in": 0,
                 "tokens_out": 0,
+                "past_tokens_in": get_module_tokens(loc, base_dir=base_dir)[0],
+                "past_tokens_out": get_module_tokens(loc, base_dir=base_dir)[1],
                 "has_artifact": artifact_data is not None,
                 "artifact_hash": (
                     artifact_data.get("code_hash", "")
@@ -594,7 +668,18 @@ def build(
                 status_dict[loc]['status'] = "Completed"
                 status_dict[loc]['step'] = "Done"
                 status_dict[loc]['iterations'] = get_total_iterations(loc, base_dir=base_dir)
-
+                # Show cumulative past tokens for already-built modules
+                if status_dict[loc].get("tokens_in", 0) == 0:
+                    past = get_module_tokens(loc, base_dir=base_dir)
+                    if past[0] == 0 and past[1] == 0:
+                        # Fallback: no per-module data (built before module_tokens
+                        # table existed). Use the aggregate token_usage total,
+                        # evenly distributed across all completed modules.
+                        _, _, (db_in, db_out) = get_token_summary(base_dir=base_dir)
+                        n = max(len(built_modules), 1)
+                        past = (db_in // n, db_out // n)
+                    status_dict[loc]['tokens_in'] = past[0]
+                    status_dict[loc]['tokens_out'] = past[1]
             # Classify unbuilt modules
             remaining = {
                 loc: spec
@@ -636,7 +721,7 @@ def build(
 
             # If nothing is buildable and nothing is waiting, we're stuck
             if not buildable_now:
-                console.print(generate_status_table(status_dict, module_map))
+                console.print(generate_status_table(status_dict, module_map, base_dir=base_dir))
                 if remaining and not blocked:
                     console.print(
                         "\n[bold red]Error: Circular dependency or missing dependency detected.[/bold red]"
@@ -654,28 +739,42 @@ def build(
                 raise typer.Exit(1)
 
 
-            with Live(
-                generate_status_table(status_dict, module_map), refresh_per_second=4
-            ) as live:
-                async def update_ui_loop():
-                    while True:
-                        sorted_status = dict(sorted(status_dict.items()))
-                        live.update(generate_status_table(sorted_status, module_map))
-                        await asyncio.sleep(0.25)
-
+            if json_output:
                 build_tasks = [
                     process_module(
                         loc, spec, status_dict, semaphore, git_lock, config_path,
                         force_fresh=force_fresh,
                         graph=graph_cache,
                         log_level=log_level,
+                        reporter=reporter,
                     )
                     for loc, spec in buildable_now.items()
                 ]
-                ui_task = asyncio.create_task(update_ui_loop())
                 await asyncio.gather(*build_tasks)
-                ui_task.cancel()
-                live.update(generate_status_table(status_dict, module_map))
+            else:
+                with suppress_console_logging():
+                    with Live(
+                        generate_status_table(status_dict, module_map, base_dir=base_dir), refresh_per_second=4
+                    ) as live:
+                        async def update_ui_loop():
+                            while True:
+                                sorted_status = dict(sorted(status_dict.items()))
+                                live.update(generate_status_table(sorted_status, module_map, base_dir=base_dir))
+                                await asyncio.sleep(0.25)
+
+                        build_tasks = [
+                            process_module(
+                                loc, spec, status_dict, semaphore, git_lock, config_path,
+                                force_fresh=force_fresh,
+                                graph=graph_cache,
+                                log_level=log_level,
+                            )
+                            for loc, spec in buildable_now.items()
+                        ]
+                        ui_task = asyncio.create_task(update_ui_loop())
+                        await asyncio.gather(*build_tasks)
+                        ui_task.cancel()
+                        live.update(generate_status_table(status_dict, module_map, base_dir=base_dir))
 
             # Tally wave results
             wave_failures = []
@@ -690,6 +789,8 @@ def build(
             built_modules.update(wave_successes)
             failed_modules.update(wave_failures)
 
+            reporter.wave_end(wave_successes, wave_failures)
+
             # Report failures but continue
             if wave_failures:
                 console.print(
@@ -703,23 +804,36 @@ def build(
                     console.print(f"    Log: [blue]{info.get('log_file', '')}[/blue]")
                     console.print(f"    Tokens: {info.get('tokens_in', 0) + info.get('tokens_out', 0):,}")
 
-        # Final summary
-        if failed_modules:
-            console.print(
-                f"\n[bold red]Build completed with {len(failed_modules)} failure(s).[/bold red]"
-            )
-            blocked_count = sum(
-                1 for loc in module_map
-                if any(dep in failed_modules for dep in module_map[loc].get("dependencies", []))
-            )
-            if blocked_count:
+        # Final summary (suppressed in JSON mode — the build_end event carries it)
+        if not json_output:
+            if failed_modules:
                 console.print(
-                    f"[bold yellow]{blocked_count} module(s) blocked by failed dependencies.[/bold yellow]"
+                    f"\n[bold red]Build completed with {len(failed_modules)} failure(s).[/bold red]"
                 )
-        else:
-            console.print(
-                "\n[bold green]Build cycle complete! All modules built successfully.[/bold green]"
-            )
+                blocked_count = sum(
+                    1 for loc in module_map
+                    if any(dep in failed_modules for dep in module_map[loc].get("dependencies", []))
+                )
+                if blocked_count:
+                    console.print(
+                        f"[bold yellow]{blocked_count} module(s) blocked by failed dependencies.[/bold yellow]"
+                    )
+            else:
+                console.print(
+                    "\n[bold green]Build cycle complete! All modules built successfully.[/bold green]"
+                )
+
+        # Token totals for the build_end event
+        total_in = sum(info.get("tokens_in", 0) for info in status_dict.values())
+        total_out = sum(info.get("tokens_out", 0) for info in status_dict.values())
+        blocked_count = sum(
+            1 for loc in module_map
+            if any(dep in failed_modules for dep in module_map[loc].get("dependencies", []))
+        )
+        reporter.build_end(
+            len(module_map), len(built_modules), len(failed_modules),
+            blocked_count, total_in, total_out,
+        )
 
     asyncio.run(run_builds())
 

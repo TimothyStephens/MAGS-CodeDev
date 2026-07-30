@@ -237,10 +237,41 @@ def get_dual_loggers(
     resp_logger = get_response_logger(hash, base_dir=base_dir, log_level=log_level)
     return func_logger, resp_logger
 
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def suppress_console_logging(level: int = logging.WARNING):
+    """Temporarily raise the console handler level so it doesn't garble the TUI.
+
+    During a Rich ``Live`` render, INFO/DEBUG log lines printed to the console
+    StreamHandler collide with the live-updated tree, producing garbled output.
+    This context manager raises the console handler to ``level`` (default
+    WARNING) for its duration, then restores it. File handlers are unaffected.
+    """
+    root = logging.getLogger("mags_codedev")
+    original_levels: dict[int, int] = {}
+    for i, handler in enumerate(root.handlers):
+        if isinstance(handler, logging.StreamHandler) and not isinstance(
+            handler, logging.FileHandler
+        ):
+            original_levels[i] = handler.level
+            handler.setLevel(level)
+    try:
+        yield
+    finally:
+        for i, handler in enumerate(root.handlers):
+            if i in original_levels:
+                handler.setLevel(original_levels[i])
+
+
 __all__ = [
     "setup_logger",
     "get_function_logger",
     "get_response_logger",
     "get_dual_loggers",
+    "suppress_console_logging",
 ]
+
 
