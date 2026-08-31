@@ -7,6 +7,7 @@ PODMAN_IMAGE="localhost/mags-codedev-omp"
 PODMAN_TAG="latest"
 MONITOR_INTERVAL=5
 MODELS_FILE="$HOME/.omp/agent/models.yml"
+EXTRA_PODMAN_PARAMETERS="--privileged --security-opt seccomp=unconfined --security-opt apparmor=unconfined -v /sys/fs/cgroup:/sys/fs/cgroup:ro"
 
 # ── Helpers ───────────────────────────────────────────────────────────
 die()  { echo "Error: $*" >&2; exit 1; }
@@ -138,7 +139,9 @@ create_session() {
     # ── Start container in detached mode ─────────────────────────────
     # Container stays alive via 'sleep infinity'; panes connect via
     # podman exec -it, so each gets its own interactive session.
-    podman run --name "${name}" --entrypoint "" --replace -d --network=host ${omp_flag} \
+    podman run ${EXTRA_PODMAN_PARAMETERS} \
+        --name "${name}" --entrypoint "" \
+        --replace -d --network=host ${omp_flag} \
         ${image} sleep infinity
 
     # Wait until the container is actually running
@@ -210,15 +213,15 @@ create_session() {
     # ── Start programs ─────────────────────────────────────────────────
     # Pane 1: Shell 1 — interactive shell inside the container
     tmux send-keys -t "${name}:0.1" \
-        "podman exec -it ${name} bash" Enter
+        "podman exec -it ${name} env PROMPT_COMMAND='clear; unset PROMPT_COMMAND' bash" Enter
     # Pane 2: Shell 2 — second interactive shell inside the container
     tmux send-keys -t "${name}:0.2" \
-        "podman exec -it ${name} bash" Enter
+        "podman exec -it ${name} env PROMPT_COMMAND='clear; unset PROMPT_COMMAND' bash" Enter
     # Pane 3: btop (top-right) — host resource monitor
     tmux send-keys -t "${name}:0.3" "btop 2>/dev/null || htop" Enter
     # Pane 4: Monitor (bottom-right) — git status + podman ps
     tmux send-keys -t "${name}:0.4" \
-        "watch -n ${MONITOR_INTERVAL} -t 'echo \"=== Podman ===\"; podman ps --format \"{{.Names}} {{.Status}}\" 2>/dev/null | head -5; echo; echo \"=== Git ===\"; git -C ${project_dir} status --short 2>/dev/null || echo \"no repo\"'" \
+        "watch -n ${MONITOR_INTERVAL} -t 'echo \"=== Podman ===\"; podman ps --format \"{{.Names}} {{.Status}}\" 2>/dev/null | head -20; echo; echo \"=== Git ===\"; git -C ${project_dir} status --short 2>/dev/null || echo \"no repo\"'" \
         Enter
 
     # Select OMP pane
@@ -257,13 +260,14 @@ USAGE
     omp-workspace [OPTIONS] [DIRECTORY]
 
 OPTIONS
-    --help, -h          This help
-    --list, -l          Active sessions
-    --continue, -c      Attach to existing (default)
-    --new, -n           Create new session
-    --check-hosts       Ping model server endpoints before starting
-    --kill, -k NAME     Kill session (also stops its podman container) 
-    --attach, -a NAME   Attach to a specific session by name
+    --help, -h                 This help
+    --list, -l                 Active sessions
+    --continue, -c             Attach to existing (default)
+    --new, -n                  Create new session
+    --check-hosts              Ping model server endpoints before starting
+    --kill, -k NAME            Kill session (also stops its podman container) 
+    --attach, -a NAME          Attach to a specific session by name
+    --extra_podman_params, -e  Extra parameters for podman
 
 LAYOUT
     ┌──────────────────────────┬──────────┬──────────┐
@@ -312,17 +316,18 @@ CHECK_HOSTS="false"
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --help|-h)        show_help; exit 0 ;;
-        --list|-l)        show_list; exit 0 ;;
-        --continue|-c)    ACTION="continue"; shift ;;
-        --new|-n)         ACTION="new"; shift ;;
-        --check-hosts)    CHECK_HOSTS="true"; shift ;;
-        --force|-f)       CHECK_HOSTS="true"; shift ;;  # legacy alias
-        --skip-checks)    shift ;;  # accepted for compat, no-op (checks are opt-in now)
-        --kill|-k)        TARGET="${2:?--kill requires name}"; shift 2 ;;
-        --attach|-a)      ATTACH="${2:?--attach requires name}"; shift 2 ;;
-        -*)               die "Unknown: $1 (--help)" ;;
-        *)                DIR="$1"; shift ;;
+        --help|-h)                 show_help; exit 0 ;;
+        --list|-l)                 show_list; exit 0 ;;
+        --continue|-c)             ACTION="continue"; shift ;;
+        --new|-n)                  ACTION="new"; shift ;;
+        --check-hosts)             CHECK_HOSTS="true"; shift ;;
+        --force|-f)                CHECK_HOSTS="true"; shift ;;  # legacy alias
+        --skip-checks)             shift ;;  # accepted for compat, no-op (checks are opt-in now)
+        --kill|-k)                 TARGET="${2:?--kill requires name}"; shift 2 ;;
+        --attach|-a)               ATTACH="${2:?--attach requires name}"; shift 2 ;;
+        --extra_podman_params|-e)  EXTRA_PODMAN_PARAMETERS="${2:?--extra_podman_params requires name}"; shift 2 ;;
+        -*)                        die "Unknown: $1 (--help)" ;;
+        *)                         DIR="$1"; shift ;;
     esac
 done
 

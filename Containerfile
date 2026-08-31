@@ -20,6 +20,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sudo \
     nano vim \
     ripgrep \
+    # Playwright Chromium dependencies
+    libnspr4 libnss3 \
+    libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 \
+    libdbus-1-3 libx11-6 libx11-xcb1 libxcomposite1 libxcursor1 \
+    libxdamage1 libxext6 libxfixes3 libxrandr2 libxrender1 \
+    libxss1 libxtst6 libgbm1 libxcb1 libxkbcommon0 \
+    libasound2 libpulse0 libcups2 \
+    libpango-1.0-0 libcairo2 libdrm2 libwayland-client0 \
+    libxshmfence1 fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 # fd is installed as fdfind on Debian — symlink to fd for pi-nvim-bridge
@@ -49,9 +58,13 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 ENV PIP_DEFAULT_TIMEOUT=120
 ENV PIP_RETRIES=10
 RUN pip install --retries 10 --timeout 120 \
-        pytest pytest-cov flake8 mypy bandit pyright numpy pandas
+        pytest pytest-cov flake8 mypy bandit pyright numpy pandas playwright
 RUN pip install --retries 10 --timeout 120 hound-mcp[all]
-RUN (command -v playwright &>/dev/null && echo "playwright already installed" || npm install -g --force playwright); playwright install chromium
+# Persist Playwright browsers to volume-mounted /config/ (not ephemeral /root/)
+ENV PLAYWRIGHT_BROWSERS_PATH=/config/.cache/ms-playwright
+RUN mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" \
+    && (command -v playwright &>/dev/null && echo "playwright already installed" || npm install -g --force playwright) && \
+    playwright install chromium
 
 # ── pi-nvim-bridge — OMP autocomplete in Neovim ──────────────────
 RUN for i in 1 2 3 4 5; do git clone --depth 1 https://github.com/dabstractor/pi-nvim-bridge.git /opt/pi-nvim-bridge && break || sleep 10; done \
