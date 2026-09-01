@@ -67,11 +67,13 @@ omp -p '/extensions'   # should show mags-codedev-extension (7 tools)
 
 ### Container Sandbox (full isolation)
 
-A podman image bundling OMP + MAGs-CodeDev + Python/Rust/Go toolchains:
+Moved to the [omp-sandbox](https://github.com/TimothyStephens/omp-sandbox) repo (minimal OMP container + version-controlled provisioning of `~/.omp`):
 
 ```bash
-bash Containerfile_build          # builds localhost/mags-codedev-omp:latest
-./omp-workspace                   # launches tmux + podman session
+cd omp-sandbox
+bash Containerfile_build   # builds localhost/omp-sandbox:latest
+./omp-sandbox install      # provisions ~/.omp from manifest.json
+./omp-workspace            # tmux + podman session for a project
 ```
 
 ### Dependencies
