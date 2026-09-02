@@ -144,8 +144,9 @@ def hash_spec(spec: dict) -> str:
     edits reuse existing worktrees, logs, and artifacts instead of
     spawning fresh ones.
 
-    H3: Note: Spec changes (description/dependencies) that don't affect
-    location will NOT trigger a rebuild. Use --force to rebuild.
+    H3: Note: spec CONTENT edits (description/dependencies) DO trigger a
+    rebuild — is_function_built compares hash_spec_content against the saved
+    artifact. Use --force-fresh to rebuild regardless of any hash.
     M1: Explicit UTF-8 encoding for portability.
     """
     return hashlib.sha256(spec.get("location", "").encode("utf-8")).hexdigest()

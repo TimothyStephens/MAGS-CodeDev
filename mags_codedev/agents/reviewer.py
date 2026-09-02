@@ -18,7 +18,10 @@ async def _get_review(llm, state: ModuleState) -> str:
     """Helper function to execute a single review asynchronously with retry logic."""
     model_name = getattr(llm, 'model_name', getattr(llm, 'model', 'unknown'))
 
-    func_logger, resp_logger = get_dual_loggers(state.get("log_filepath"))
+    func_logger, resp_logger = get_dual_loggers(
+        state.get("log_filepath"),
+        base_dir=state.get("base_dir", ".mags-codedev"),
+    )
     session = state.get("_session_number", 1)
     system_prompt = (
         "You are a strict Code Reviewer.\n"
@@ -137,7 +140,10 @@ async def multi_llm_review_node(state: ModuleState) -> dict:
     skipped = [r for r in reviews if r.startswith(_REVIEW_SKIPPED)]
     successful = [r for r in reviews if not r.startswith(_REVIEW_SKIPPED)]
 
-    func_logger, _ = get_dual_loggers(state.get("log_filepath"))
+    func_logger, _ = get_dual_loggers(
+        state.get("log_filepath"),
+        base_dir=state.get("base_dir", ".mags-codedev"),
+    )
     reason = state.get("_next_reason", "")
     if reason:
         func_logger.info(f"[Reason] {reason}")

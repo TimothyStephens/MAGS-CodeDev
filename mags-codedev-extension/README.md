@@ -1,6 +1,6 @@
 # MAGs-CodeDev OMP Extension
 
-Custom tools for [Oh My Pi](https://omp.sh) that expose the [MAGs-CodeDev](https://github.com/j0k3r/MAGs-CodeDev) multi-agent CLI as structured OMP tools with streaming JSONL progress.
+Custom tools for [Oh My Pi](https://omp.sh) that expose the [MAGs-CodeDev](https://github.com/TimothyStephens/MAGS-CodeDev) multi-agent CLI as structured OMP tools with streaming JSONL progress.
 
 ## What it does
 
@@ -21,11 +21,11 @@ Key improvements over the old extension:
 ## Installation
 
 ```bash
-# Project scope (recommended — lives in your repo)
-omp install ./mags-codedev-extension
+# Project scope (lives in your repo)
+omp plugin link --scope=project ./mags-codedev-extension
 
-# Or global scope
-omp install -g ./mags-codedev-extension
+# Or user scope (default)
+omp plugin link ./mags-codedev-extension
 ```
 
 Verify:
@@ -66,29 +66,4 @@ The extension parses these and streams `module_step` events to the OMP TUI via `
 
 ## Container usage
 
-Build a container with both OMP and MAGs-CodeDev:
-
-```dockerfile
-FROM python:3.11-slim
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN curl -fsSL https://bun.sh/install | bash
-ENV PATH=$PATH:/root/.bun/bin
-RUN bun install -g @oh-my-pi/pi-coding-agent
-
-WORKDIR /mags
-COPY pyproject.toml .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-RUN pip install --no-cache-dir .
-
-WORKDIR /ext
-COPY mags-codedev-extension/ .
-RUN omp install .
-
-WORKDIR /workspace
-ENTRYPOINT ["omp"]
-```
+Containerized development lives in the [omp-sandbox](https://github.com/TimothyStephens/omp-sandbox) repo: it builds a minimal OMP image and provisions `~/.omp` (including this extension) from its `manifest.json`.

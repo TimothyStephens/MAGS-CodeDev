@@ -14,7 +14,7 @@ def coder_node(state: ModuleState) -> dict:
     backend = state.get("backend")
 
     # Determine context based on whether this is a first run or a fix.
-    is_fix = state.get("iteration_count", 0) > 0
+    is_fix = bool(state.get("review_comments")) or bool(state.get("test_error_summary"))
     feedback = ""
     prompt_narrative = "Write the initial implementation of this module."
 
@@ -86,6 +86,6 @@ def coder_node(state: ModuleState) -> dict:
 
     return {
         "code": response_content + "\n",
-        "iteration_count": state.get("iteration_count", 0) + 1,
+        "iteration_count": state.get("iteration_count", 0) + (0 if state.get("review_comments") else 1),
         "review_comments": [],
     }

@@ -89,6 +89,9 @@ def _run_with_docker(state: ModuleState, command: str, config: dict, func_logger
 
     try:
         worktree_path = state["worktree_path"]
+        timeout_s = int(
+            float(config.get("settings", {}).get("timeout_per_module_mins", 15)) * 60
+        )
         image_tag = config.get("settings", {}).get("docker_test_image", f"mags-codedev-{runtime}:latest")
 
         # Check if image exists; if not, build it
@@ -131,7 +134,7 @@ def _run_with_docker(state: ModuleState, command: str, config: dict, func_logger
             "/bin/bash", "-c", command,
         ]
         result = subprocess.run(
-            run_cmd, capture_output=True, text=True, timeout=120
+            run_cmd, capture_output=True, text=True, timeout=timeout_s
         )
         output = result.stdout + result.stderr
         func_logger.debug(f"{runtime} output:\n{output}")
@@ -142,7 +145,7 @@ def _run_with_docker(state: ModuleState, command: str, config: dict, func_logger
             func_logger.info(f"{runtime} tests passed.")
         return output
     except subprocess.TimeoutExpired:
-        return "ERROR: Command timed out (120s limit)."
+        return f"ERROR: Command timed out ({timeout_s}s limit)."
     except Exception as e:
         return f"ERROR: {runtime} execution failed: {e}"
 
@@ -155,6 +158,9 @@ def _run_with_apptainer(state: ModuleState, command: str, config: dict, func_log
 
     try:
         worktree_path = state["worktree_path"]
+        timeout_s = int(
+            float(config.get("settings", {}).get("timeout_per_module_mins", 15)) * 60
+        )
         image_name = config.get("settings", {}).get("apptainer_test_image", "mags-dev-env.sif")
         image_path = Path(worktree_path) / image_name
 
@@ -193,12 +199,13 @@ def _run_with_apptainer(state: ModuleState, command: str, config: dict, func_log
         run_cmd = [
             runtime_bin, "exec",
             "--bind", f"{worktree_path}:/project",
+            "--pwd", "/project",
             *env_args,
             str(image_path),
             "/bin/bash", "-c", command,
         ]
         result = subprocess.run(
-            run_cmd, capture_output=True, text=True, timeout=120
+            run_cmd, capture_output=True, text=True, timeout=timeout_s
         )
         output = result.stdout + result.stderr
         func_logger.debug(f"{runtime_name} output:\n{output}")
@@ -209,7 +216,7 @@ def _run_with_apptainer(state: ModuleState, command: str, config: dict, func_log
             func_logger.info(f"{runtime_name} tests passed.")
         return output
     except subprocess.TimeoutExpired:
-        return "ERROR: Command timed out (120s limit)."
+        return f"ERROR: Command timed out ({timeout_s}s limit)."
     except Exception as e:
         return f"ERROR: {runtime_name} execution failed: {e}"
 
@@ -218,6 +225,9 @@ def _run_locally(state: ModuleState, command: str, config: dict, func_logger: lo
     """Runs a command in the local (host) environment, no container isolation."""
     try:
         worktree_path = state["worktree_path"]
+        timeout_s = int(
+            float(config.get("settings", {}).get("timeout_per_module_mins", 15)) * 60
+        )
         # B14: Use backend env_vars for local runner too
         extra_env = backend.env_vars(worktree_path) if backend else {"PYTHONPATH": worktree_path}
         # Install the language toolchain + project deps so the local runner
@@ -233,7 +243,7 @@ def _run_locally(state: ModuleState, command: str, config: dict, func_logger: lo
             capture_output=True,
             text=True,
             cwd=worktree_path,
-            timeout=120,
+            timeout=timeout_s,
             env={**os.environ, **extra_env},
         )
         output = result.stdout + result.stderr
@@ -245,7 +255,7 @@ def _run_locally(state: ModuleState, command: str, config: dict, func_logger: lo
             func_logger.info("Local tests passed.")
         return output
     except subprocess.TimeoutExpired:
-        return "ERROR: Command timed out (120s limit)."
+        return f"ERROR: Command timed out ({timeout_s}s limit)."
     except Exception as e:
         return f"ERROR: Local execution failed: {e}"
 

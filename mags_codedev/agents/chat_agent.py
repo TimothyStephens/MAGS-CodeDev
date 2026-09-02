@@ -18,7 +18,7 @@ def read_file(filepath: str) -> str:
     project_dir = os.path.abspath(os.getcwd())
     target_path = os.path.abspath(os.path.join(project_dir, filepath))
 
-    if not target_path.startswith(project_dir):
+    if target_path != project_dir and not target_path.startswith(project_dir + os.sep):
         return f"Error: Path traversal detected. Cannot read from '{filepath}'."
 
     try:
@@ -36,7 +36,7 @@ def write_file(filepath: str, content: str) -> str:
     project_dir = os.path.abspath(os.getcwd())
     target_path = os.path.abspath(os.path.join(project_dir, filepath))
 
-    if not target_path.startswith(project_dir):
+    if target_path != project_dir and not target_path.startswith(project_dir + os.sep):
         return f"Error: Path traversal detected. Cannot write to '{filepath}'."
 
     try:

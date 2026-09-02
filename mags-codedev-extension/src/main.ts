@@ -287,8 +287,8 @@ export default function magsExtension(pi: ExtensionAPI) {
 		name: "mags_test",
 		label: "MAGs Test",
 		description:
-			"Run pytest, flake8, mypy, and bandit for all modules in the configured " +
-			"container environment (Docker, Apptainer, or local).",
+			"Run pytest for all modules in the configured container environment " +
+			"(podman, docker, apptainer, or local).",
 		parameters: z.object({
 			config_path: z
 				.string()

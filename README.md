@@ -59,7 +59,7 @@ bun install -g @oh-my-pi/pi-coding-agent
 cd MAGs-CodeDev && pip install -e .
 
 # Install the extension
-omp install ./mags-codedev-extension
+omp plugin link --scope=project ./mags-codedev-extension
 
 # Verify
 omp -p '/extensions'   # should show mags-codedev-extension (7 tools)
@@ -83,7 +83,6 @@ bash Containerfile_build   # builds localhost/omp-sandbox:latest
 | CLI | `typer`, `rich` |
 | LLM | `langgraph`, `langchain-core`, `langchain-openai`, `langchain-google-genai`, `langchain-anthropic`, `openai`, `anthropic`, `google-generativeai`, `google-genai` |
 | Git | `gitpython` |
-| Container | `docker` |
 | Config | `pyyaml`, `pydantic` |
 | Resilience | `tenacity`, `httpx` |
 
@@ -196,7 +195,7 @@ mags-codedev debug .mags-codedev/logs/<hash>.log
 mags-codedev debug "Bug in pricing" --mod src/pricing.py
 ```
 
-After debugging, use `mags-codedev build --module <location>` to rerun the task.
+With `--mod` (or a log path whose hash auto-detects the module), `debug` re-runs the module's full fix loop automatically (cmd_debug.py:173-178). Without a resolvable module it only analyzes the trace — then rerun via `mags-codedev build --module <location>`.
 
 ### `mags-codedev chat`
 
@@ -279,30 +278,20 @@ settings:
   test_runner: "auto"
 
   # Container image names (auto-built if missing)
-  podman_test_image: "mags-dev-env:latest"
   docker_test_image: "mags-dev-env:latest"
   apptainer_test_image: "mags-dev-env.sif"
-
-  # Python base image (optional override)
-  python_base_image: "python:3.11-slim"
-
-  # System packages to install in the container
-  system_dependencies: ["build-essential", "pkg-config"]
 
   # Parallelism and budgets
   max_parallel_modules: 4
   max_test_fix_iterations: 5     # max test/lint fix cycles before aborting
   max_review_rounds: 3          # max review revision rounds before aborting
-  timeout_per_module_mins: 15
+  timeout_per_module_mins: 15  # max minutes for each container test/lint run
 
   # Artifact directory (auto-gitignored)
   base_dir: ".mags-codedev"
 
   # Logging: info | debug | trace
   log_level: "info"
-
-  # Merge policy: auto | prompt
-  merge_policy: "auto"
 ```
 
 ### Environment Variables
@@ -339,6 +328,8 @@ reviewers:
     base_url: "http://localhost:11434"   # optional, defaults to this
     num_ctx: 8192                        # optional context window
 ```
+
+`ollama` provider prerequisite: `pip install langchain-ollama` (not bundled with the standard install; config_parser.py:253 raises a clear ImportError without it).
 
 ---
 
@@ -502,7 +493,7 @@ A JSON array of module objects. Order does not matter — the build system compu
 
 - `location` must be a relative path to a file
 - `dependencies` must reference `location` values of other modules in the manifest
-- Cycles are detected and rejected before the build starts
+- Cycles and missing dependencies are detected during scheduling — independent modules may build and merge first, then the build exits with an error listing the stuck modules (cmd_build.py:724-741).
 - Modules with no dependencies build in the first wave
 - Editing a module's `description` or `dependencies` invalidates that module on the next `build` (spec-aware rebuild). The location-based hash is preserved for log/worktree continuity.
 
@@ -544,7 +535,7 @@ mags-codedev build --module src/pricing.py
 
 ```bash
 podman info   # or: docker info
-# Check system_dependencies in config.yaml
+# Check the image build log — the Dockerfile is auto-generated from requirements.txt
 ```
 
 ### LLM API errors

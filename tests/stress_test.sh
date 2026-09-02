@@ -21,8 +21,8 @@ echo ""
 # Bootstrap on first run
 if [ ! -d "${TEST_DIR}" ]; then
 	echo "Bootstrapping ${TEST_DIR}..."
-	mkdir -p "${TEST_DIR}"
-	cp "${MANIFEST_SRC}" "${TEST_DIR}/manifest.json"
+	mkdir -p "${TEST_DIR}/.mags-codedev"
+	cp "${MANIFEST_SRC}" "${TEST_DIR}/.mags-codedev/manifest.json"
 	cd "${TEST_DIR}"
 	git init
 	echo "Bootstrap complete."

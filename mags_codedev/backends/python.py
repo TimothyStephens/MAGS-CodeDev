@@ -72,8 +72,8 @@ class PythonBackend:
         return {"PYTHONPATH": f"{worktree_path}"}
 
     def container_env_vars(self) -> dict[str, str]:
-        """Environment variables inside the container (uses /app mount)."""
-        return {"PYTHONPATH": "/app"}
+        """Environment variables inside the container (uses /project mount)."""
+        return {"PYTHONPATH": "/project"}
 
     # ── Agent Prompt Templates ─────────────────────────────────────
 

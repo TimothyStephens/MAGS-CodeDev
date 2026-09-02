@@ -206,21 +206,9 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# MAGs-CodeDev specific
-*.log
-*.sqlite3
-mags_tokens.db
-mags_cache.db
+# MAGS-CodeDev artifacts
+.mags-codedev/
 config.yaml
-# Local Pi runtime state
-.atl/
-
-# MAGS-CodeDev
-.MAGS-CodeDev/
-config.yaml
-.worktree_*/
-Dockerfile.mags-codedev
-*.sif.def
 tests/stress_test
 
 # Node.js

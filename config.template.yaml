@@ -73,12 +73,6 @@ settings:
   # Explicit options: 'podman', 'docker', 'apptainer', 'singularity', 'local'.
   test_runner: "auto"
   
-  # Override base image (optional; backend provides default)
-  python_base_image: "python:3.11-slim"
-  
-  # System-level packages to install via apt-get (e.g., ["build-essential", "libpq-dev"])
-  system_dependencies: ["build-essential", "pkg-config"]
-  
   # How many modules to build concurrently
   max_parallel_modules: 4
   
@@ -87,11 +81,10 @@ settings:
   max_review_rounds: 3  # Max review revision rounds before aborting
   
   # Container image names (auto-built if not found)
-  podman_test_image: "mags-dev-env:latest"
   docker_test_image: "mags-dev-env:latest"
   apptainer_test_image: "mags-dev-env.sif"
   
-  # Max time before a LangGraph run aborts
+  # Max wall-clock time per module test/lint run (minutes)
   timeout_per_module_mins: 15
   
   # Base artifact directory (logs, worktrees, artifacts)
@@ -100,6 +93,3 @@ settings:
   # Logging level: 'info', 'debug', 'trace'
   log_level: "info"
 
-  # Merge policy: 'auto' merges worktree to main automatically,
-  # 'prompt' asks before merging (default: auto)
-  merge_policy: "auto"

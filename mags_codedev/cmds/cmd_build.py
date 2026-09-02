@@ -143,8 +143,6 @@ async def process_module(
             artifact_data = load_artifact(module_location, base_dir=base_dir)
             artifact_code = artifact_data.get("code") if artifact_data else ""
             artifact_tests = artifact_data.get("tests") if artifact_data else ""
-            artifact_code_hash = artifact_data.get("code_hash") if artifact_data else None
-            artifact_test_hash = artifact_data.get("test_hash") if artifact_data else None
 
             if not existing_code and artifact_code:
                 existing_code = artifact_code
@@ -224,8 +222,8 @@ async def process_module(
                 "review_comments": [],
                 "error_location": None,
 
-                "previous_code_hash": artifact_code_hash,
-                "previous_test_hash": artifact_test_hash,
+                "previous_code_hash": None,
+                "previous_test_hash": None,
                 "iteration_count": 1 if initial_error else 0,
                 "max_test_fix_iterations": max_test_fix_iterations,
                 "max_review_rounds": max_review_rounds,

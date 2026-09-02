@@ -125,14 +125,14 @@ def list_models(
 
     for role in ["coder", "tester", "log_checker", "chat"]:
         m_cfg = all_agent_configs.get(role, {})
-        if m_cfg.get("provider") == "custom_openai" and m_cfg.get("base_url"):
+        if m_cfg.get("provider") in ("custom_openai", "local") and m_cfg.get("base_url"):
             custom_urls.add(m_cfg.get("base_url"))
 
     reviewers_list = (
         build_config.get("reviewers", []) or models_config.get("reviewers", [])
     )
     for r_cfg in reviewers_list:
-        if r_cfg.get("provider") == "custom_openai" and r_cfg.get("base_url"):
+        if r_cfg.get("provider") in ("custom_openai", "local") and r_cfg.get("base_url"):
             custom_urls.add(r_cfg.get("base_url"))
 
     for url in custom_urls:
