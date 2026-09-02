@@ -50,7 +50,7 @@ def _bootstrap_config(base_dir: str) -> tuple[Path, bool]:
     Returns (config_path, was_created).
     """
     import logging
-    logger = logging.getLogger("mags")
+    logger = logging.getLogger("mags_codedev")
 
     config_path = Path(base_dir) / "config.yaml"
     if config_path.exists():
@@ -95,7 +95,7 @@ def find_default_config_path() -> Path:
     2. config.yaml  (legacy cwd fallback)
     """
     import logging
-    logger = logging.getLogger("mags")
+    logger = logging.getLogger("mags_codedev")
 
     base_config = Path(_DEFAULT_BASE_DIR) / "config.yaml"
     if base_config.exists():

@@ -4,7 +4,7 @@ import json
 
 from mags_codedev.state import ModuleState
 from mags_codedev.utils.llm_call import build_context_blocks, call_llm
-from mags_codedev.utils.logger import get_dual_loggers
+from mags_codedev.utils.logger import get_dual_loggers, logger
 
 
 def log_checker_node(state: ModuleState) -> dict:
@@ -68,6 +68,7 @@ def log_checker_node(state: ModuleState) -> dict:
             narrative="Diagnose test/lint failures and locate the fault.",
         )
     except Exception:
+        logger.warning("log_checker LLM call failed; using keyword fallback")
         return _basic_analysis(state, failure_keywords)
 
     try:

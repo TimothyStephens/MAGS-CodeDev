@@ -28,6 +28,10 @@ class PythonBackend:
         """Extra Dockerfile lines: install the Python test/lint toolchain."""
         return "RUN pip install --no-cache-dir pytest pytest-cov flake8 mypy bandit"
 
+    def apptainer_post_commands(self) -> list[str]:
+        """Apptainer %post toolchain: same package set as dockerfile_content."""
+        return ["pip install --no-cache-dir pytest pytest-cov flake8 mypy bandit"]
+
     # ── Local Runner ───────────────────────────────────────────────
 
     local_install_command: str = (
@@ -44,7 +48,7 @@ class PythonBackend:
 
     def test_command_project(self) -> str:
         """Build the pytest command to run all tests in the project."""
-        return "python3 -m pytest -v --cov-report=term-missing"
+        return "python3 -m pytest -v"
 
     def lint_command(self, target_file: Path) -> str:
         """Build semicolon-separated lint, type-check, and security scan commands."""

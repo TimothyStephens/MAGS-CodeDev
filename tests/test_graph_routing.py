@@ -28,6 +28,26 @@ class TestGraphRouting:
         )
         assert evaluate_test_results(state) == "max_iterations_reached"
 
+    def test_rc_zero_with_error_in_name_routes_to_linters(self):
+        """Exit code 0 wins over failure keywords in test names (M4)."""
+        state = ModuleState(
+            test_results="test_error_handling PASSED\n===== 1 passed in 0.20s =====",
+            test_returncode=0,
+            iteration_count=1,
+            max_test_fix_iterations=5,
+        )
+        assert evaluate_test_results(state) == "tests_passed"
+
+    def test_rc_nonzero_without_keywords_routes_to_log_checker(self):
+        """Non-zero exit code routes to log_checker even without failure keywords (M4)."""
+        state = ModuleState(
+            test_results="===== 1 passed in 0.50s =====",
+            test_returncode=1,
+            iteration_count=1,
+            max_test_fix_iterations=5,
+        )
+        assert evaluate_test_results(state) == "tests_failed"
+
     def test_source_error_routes_to_coder(self):
         state = ModuleState(
             test_error_summary="TypeError in main function",

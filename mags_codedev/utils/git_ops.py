@@ -170,5 +170,5 @@ def ensure_git_repo() -> None:
 
     repo = git.Repo.init()
     # Create an empty initial commit on 'main' branch
-    repo.git.checkout("-b", "main")
+    repo.git.checkout("-B", "main")
     repo.git.commit("--allow-empty", "-m", "Initial commit")

@@ -124,14 +124,20 @@ def _resolve_env_models(config: dict) -> None:
     # Role-specific overrides (higher priority than global)
     role_prefix = "MAGS_MODEL_"
     for env_key, env_val in os.environ.items():
-        if env_key.startswith(role_prefix):
-            role = env_key[len(role_prefix):].lower()
-            role_config = build_config.get(role, {})
-            if not role_config:
-                role_config = interactive_config.get(role, {})
-            if env_val:
-                role_config["model"] = env_val
-            build_config[role] = role_config
+        if not env_key.startswith(role_prefix) or not env_val:
+            continue
+        role = env_key[len(role_prefix):].lower()
+        if role == "reviewers":
+            for r in build_config.get("reviewers", []):
+                r["model"] = env_val
+            continue
+        if role in build_config:
+            role_cfg = build_config[role]
+            if isinstance(role_cfg, dict):
+                role_cfg["model"] = env_val
+        elif role in interactive_config:
+            interactive_config[role]["model"] = env_val
+        # unknown roles: ignored (no dead keys)
 
 
 def load_config(config_path: Path = Path("config.yaml")) -> dict:

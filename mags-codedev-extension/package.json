@@ -7,7 +7,7 @@
     "extensions": ["./src/main.ts"]
   },
   "dependencies": {
-    "@oh-my-pi/pi-coding-agent": "*"
+    "@oh-my-pi/pi-coding-agent": ">=17.2.14"
   },
   "devDependencies": {
     "typescript": "^5.7.0"

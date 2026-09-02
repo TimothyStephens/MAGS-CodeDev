@@ -51,4 +51,5 @@ class ModuleState(TypedDict, total=False):
     dependency_code: Required[Dict[str, str]]   # Maps dep location -> source code
     project_instructions: Required[str]         # Project-level instructions from AGENT.md
     _next_reason: str                 # Routing reason for INFO logging
+    test_returncode: int              # exit code of last test run; 0 = pass
     log_level: Required[str]          # Configured log level: 'info'/'debug'/'trace' (controls per-module log detail)

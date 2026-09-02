@@ -109,8 +109,8 @@ def init(
     # Warn about legacy directory
     if os.path.exists(".MAGS-CodeDev"):
         console.print(
-            "[yellow]Legacy '.MAGS-CodeDev/' directory found. "
-            "Run 'mags-codedev clean' in the old directory to remove it.[/yellow]"
+            "[yellow]Legacy '.MAGS-CodeDev/' directory found. It is no longer used; "
+            "remove it manually (e.g. `rm -rf .MAGS-CodeDev`).[/yellow]"
         )
 
     # 1b. Ensure git repo exists
@@ -130,7 +130,6 @@ def init(
     # 3. Create base_dir structure
     os.makedirs(os.path.join(base_dir, "logs"), exist_ok=True)
     os.makedirs(os.path.join(base_dir, "worktrees"), exist_ok=True)
-    os.makedirs(os.path.join(base_dir, "containers"), exist_ok=True)
 
     # 4. Dependencies file (backend-agnostic)
     init_backend = get_backend(config_path)
@@ -159,6 +158,8 @@ def init(
             "ollama": "ollama",
             "local": "ollama",
             "custom_openai": "ollama",
+            "mistral": "mistral",
+            "cohere": "cohere",
         }
         required_key_name = key_name_map.get(chat_provider, "openai")
         api_key = config.get("api_keys", {}).get(required_key_name)

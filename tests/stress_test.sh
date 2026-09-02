@@ -25,6 +25,10 @@ if [ ! -d "${TEST_DIR}" ]; then
 	cp "${MANIFEST_SRC}" "${TEST_DIR}/.mags-codedev/manifest.json"
 	cd "${TEST_DIR}"
 	git init
+	git config user.name "MAGs Stress Test"
+	git config user.email "stress@mags.local"
+	git add -A
+	git commit -m "Bootstrap stress-test repo"
 	echo "Bootstrap complete."
 	echo ""
 fi

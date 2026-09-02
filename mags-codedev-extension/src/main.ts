@@ -287,7 +287,7 @@ export default function magsExtension(pi: ExtensionAPI) {
 		name: "mags_test",
 		label: "MAGs Test",
 		description:
-			"Run pytest for all modules in the configured container environment " +
+			"Run pytest for all modules in the configured environment " +
 			"(podman, docker, apptainer, or local).",
 		parameters: z.object({
 			config_path: z
@@ -323,7 +323,9 @@ export default function magsExtension(pi: ExtensionAPI) {
 		description:
 			"Pass an error trace or bug description to the LLM for automatic fixing " +
 			"of a module. Accepts a log file path (auto-detects module from hash). " +
-			"After the fix, use mags_build --module to rerun the task.",
+			"When a module is resolved, the full fix loop runs automatically; " +
+			"otherwise only the trace is analyzed — then rerun via " +
+			"mags_build --module <location>.",
 		parameters: z.object({
 			error_msg: z
 				.string()
@@ -393,8 +395,8 @@ export default function magsExtension(pi: ExtensionAPI) {
 		name: "mags_list_models",
 		label: "MAGs List Models",
 		description:
-			"List available models from OpenAI, Anthropic, Google, and Mistral " +
-			"providers based on configured API keys.",
+			"List available models from OpenAI, Anthropic, Google, Mistral, Cohere, " +
+			"and local/OpenAI-compatible providers based on configured API keys.",
 		parameters: z.object({
 			config_path: z
 				.string()

@@ -51,6 +51,12 @@ class LanguageBackend(Protocol):
         """
         ...
 
+    @abstractmethod
+    def apptainer_post_commands(self) -> list[str]:
+        """Shell commands for the Apptainer definition %post section
+        (language test/lint toolchain)."""
+        ...
+
     # ── Local Runner ───────────────────────────────────────────────
 
     @property

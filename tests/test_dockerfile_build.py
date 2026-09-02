@@ -22,25 +22,22 @@ class TestDockerfileContent:
         assert "flake8" in content
         assert "mypy" in content
 
-    def test_generate_dockerfile_includes_backend_content(self, tmp_path, monkeypatch):
+    def test_generate_dockerfile_includes_backend_content(self, tmp_path):
         """Generated Dockerfile must include the backend's dockerfile_content()."""
         (tmp_path / "requirements.txt").write_text("pydantic\n")
-        monkeypatch.chdir(tmp_path)
 
         backend = PythonBackend()
-        dockerfile = _generate_dockerfile_content({"settings": {}}, backend)
+        dockerfile = _generate_dockerfile_content({"settings": {}}, backend, str(tmp_path))
 
         assert "FROM python:3.11-slim" in dockerfile
         assert "WORKDIR /project" in dockerfile
         assert "COPY requirements.txt ." in dockerfile
         assert backend.dockerfile_content() in dockerfile
 
-    def test_generate_dockerfile_without_requirements(self, tmp_path, monkeypatch):
+    def test_generate_dockerfile_without_requirements(self, tmp_path):
         """No requirements.txt -> no COPY/RUN requirements lines, backend extras still present."""
-        monkeypatch.chdir(tmp_path)
-
         backend = PythonBackend()
-        dockerfile = _generate_dockerfile_content({"settings": {}}, backend)
+        dockerfile = _generate_dockerfile_content({"settings": {}}, backend, str(tmp_path))
 
         assert "FROM python:3.11-slim" in dockerfile
         assert "COPY requirements.txt" not in dockerfile

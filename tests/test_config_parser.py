@@ -5,6 +5,7 @@ from unittest.mock import patch, MagicMock
 from mags_codedev.utils.config_parser import (
     _create_llm_instance,
     _resolve_env_api_keys,
+    _resolve_env_models,
 )
 
 
@@ -259,3 +260,49 @@ class TestUnsupportedProvider:
                 {"provider": "bad", "model": "test"},
                 api_keys={},
             )
+
+
+class TestModelRoleOverrides:
+    """M6: MAGS_MODEL_<ROLE> overrides must not crash and must target the right role."""
+
+    def test_model_reviewers_env_applies_to_all_reviewers(self):
+        """MAGS_MODEL_REVIEWERS must set the model on every reviewer entry (was a TypeError)."""
+        config = {
+            "models": {
+                "build_workflow": {
+                    "coder": {"provider": "openai", "model": "gpt-4"},
+                    "reviewers": [
+                        {"provider": "openai", "model": "gpt-4"},
+                        {"provider": "anthropic", "model": "claude-3"},
+                    ],
+                },
+                "interactive_commands": {
+                    "chat": {"provider": "openai", "model": "gpt-4"},
+                },
+            }
+        }
+        with patch.dict(os.environ, {"MAGS_MODEL_REVIEWERS": "gpt-5"}, clear=True):
+            _resolve_env_models(config)
+        models = config["models"]["build_workflow"]
+        assert [r["model"] for r in models["reviewers"]] == ["gpt-5", "gpt-5"]
+        assert models["coder"]["model"] == "gpt-4"
+
+    def test_model_role_override_updates_single_role(self):
+        """MAGS_MODEL_TESTER must update only the tester role (no dead keys)."""
+        config = {
+            "models": {
+                "build_workflow": {
+                    "coder": {"provider": "openai", "model": "gpt-4"},
+                    "tester": {"provider": "openai", "model": "gpt-4"},
+                },
+                "interactive_commands": {
+                    "chat": {"provider": "openai", "model": "gpt-4"},
+                },
+            }
+        }
+        with patch.dict(os.environ, {"MAGS_MODEL_TESTER": "gpt-5"}, clear=True):
+            _resolve_env_models(config)
+        models = config["models"]["build_workflow"]
+        assert models["tester"]["model"] == "gpt-5"
+        assert models["coder"]["model"] == "gpt-4"
+        assert "MAGS_MODEL_TESTER" not in models

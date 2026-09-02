@@ -32,14 +32,14 @@ def _get_container_runtime(preferred: str = "podman") -> Optional[str]:
     return None
 
 
-def _generate_dockerfile_content(config: dict, backend) -> str:
+def _generate_dockerfile_content(config: dict, backend, worktree_path) -> str:
     """Generates Dockerfile content based on project dependencies and backend."""
     # B15: Use backend's default_base_image
     base_image = backend.default_base_image if backend else "python:3.11-slim"
     dockerfile_parts = [f"FROM {base_image}", "WORKDIR /project"]
     pip_flags = "--no-cache-dir"
 
-    requirements_path = Path("requirements.txt")
+    requirements_path = Path(worktree_path) / "requirements.txt"
     if requirements_path.exists():
         dockerfile_parts.append("COPY requirements.txt .")
         dockerfile_parts.append(f"RUN pip install {pip_flags} -r requirements.txt")
@@ -56,34 +56,45 @@ def _generate_dockerfile_content(config: dict, backend) -> str:
     return "\n".join(dockerfile_parts)
 
 
-def _generate_apptainer_def_content(config: dict, backend) -> str:
+def _generate_apptainer_def_content(config: dict, backend, worktree_path) -> str:
     """Generates Apptainer definition file content based on backend."""
     bootstrap = config.get("settings", {}).get("apptainer_bootstrap", "docker")
     from_image = config.get("settings", {}).get("apptainer_from_image", "python:3.11-slim")
 
-    return f"""Bootstrap: {bootstrap}
-From: {from_image}
+    # Language test/lint toolchain comes from the backend (apptainer syntax).
+    post_commands = (
+        backend.apptainer_post_commands()
+        if backend
+        else ["pip install --no-cache-dir pytest flake8 mypy"]
+    )
+    parts = [f"Bootstrap: {bootstrap}", f"From: {from_image}", "", "%post"]
+    for cmd in post_commands:
+        parts.append(f"    {cmd}")
+    if (Path(worktree_path) / "requirements.txt").exists():
+        parts += [
+            "",
+            "%files",
+            "    requirements.txt /tmp/requirements.txt",
+            "",
+            "%post",
+            "    pip install --no-cache-dir -r /tmp/requirements.txt",
+        ]
+    parts += ["", "%environment", "    export SINGULARITY_ROOTFS=/project"]
+    return "\n".join(parts)
 
-%post
-    pip install --no-cache-dir pytest flake8 mypy
 
-%files
-    requirements.txt /tmp/requirements.txt
-
-%post
-    pip install --no-cache-dir -r /tmp/requirements.txt
-
-%environment
-    export SINGULARITY_ROOTFS=/project
-""".strip()
-
-
-def _run_with_docker(state: ModuleState, command: str, config: dict, func_logger: logging.Logger, backend=None) -> str:
+def _run_with_docker(
+    state: ModuleState,
+    command: str,
+    config: dict,
+    func_logger: logging.Logger,
+    backend=None,
+) -> tuple[str, int]:
     """Runs a command inside a Docker/Podman container, building the image if necessary."""
     # B11: Use _get_container_runtime() instead of dead _get_runtime()
     runtime = _get_container_runtime()
     if runtime is None or runtime in ("apptainer", "singularity"):
-        return "ERROR: No container runtime (docker/podman) found."
+        return ("ERROR: No container runtime (docker/podman) found.", 1)
 
     runtime_bin = runtime  # 'docker' or 'podman'
 
@@ -101,7 +112,7 @@ def _run_with_docker(state: ModuleState, command: str, config: dict, func_logger
 
         if needs_build:
             func_logger.info(f"Building {runtime} image...")
-            dockerfile_content = _generate_dockerfile_content(config, backend)
+            dockerfile_content = _generate_dockerfile_content(config, backend, worktree_path)
             dockerfile_path = Path(worktree_path) / "Dockerfile"
             dockerfile_path.write_text(dockerfile_content)
 
@@ -115,7 +126,7 @@ def _run_with_docker(state: ModuleState, command: str, config: dict, func_logger
             )
             if build_result.returncode != 0:
                 func_logger.error(f"{runtime} build failed:\n{build_result.stderr}")
-                return build_result.stderr
+                return (build_result.stderr, 1)
             func_logger.info(f"{runtime} image built successfully.")
 
         # B14: Use backend container_env_vars if available
@@ -143,14 +154,20 @@ def _run_with_docker(state: ModuleState, command: str, config: dict, func_logger
             func_logger.info(f"Test failures detected in {runtime} container.")
         else:
             func_logger.info(f"{runtime} tests passed.")
-        return output
+        return (output, result.returncode)
     except subprocess.TimeoutExpired:
-        return f"ERROR: Command timed out ({timeout_s}s limit)."
+        return (f"ERROR: Command timed out ({timeout_s}s limit).", 1)
     except Exception as e:
-        return f"ERROR: {runtime} execution failed: {e}"
+        return (f"ERROR: {runtime} execution failed: {e}", 1)
 
 
-def _run_with_apptainer(state: ModuleState, command: str, config: dict, func_logger: logging.Logger, backend=None) -> str:
+def _run_with_apptainer(
+    state: ModuleState,
+    command: str,
+    config: dict,
+    func_logger: logging.Logger,
+    backend=None,
+) -> tuple[str, int]:
     """Runs a command inside an Apptainer/Singularity container, building the image if necessary."""
     # B12: Detect actual binary (apptainer or singularity)
     runtime_bin = "apptainer" if shutil.which("apptainer") else "singularity"
@@ -169,14 +186,10 @@ def _run_with_apptainer(state: ModuleState, command: str, config: dict, func_log
 
         if needs_build:
             func_logger.info(f"Building {runtime_name} image...")
-            def_content = _generate_apptainer_def_content(config, backend)
+            def_content = _generate_apptainer_def_content(config, backend, worktree_path)
             def_path = Path(worktree_path) / "project.def"
             def_path.write_text(def_content)
 
-            # Copy requirements.txt if it exists in worktree
-            req_path = Path(worktree_path) / "requirements.txt"
-            if req_path.exists():
-                shutil.copy(req_path, Path(worktree_path) / "reqs_copy.txt")
 
             build_cmd = [
                 runtime_bin, "build", str(image_path),
@@ -187,7 +200,7 @@ def _run_with_apptainer(state: ModuleState, command: str, config: dict, func_log
             )
             if build_result.returncode != 0:
                 func_logger.error(f"{runtime_name} build failed:\n{build_result.stderr}")
-                return build_result.stderr
+                return (build_result.stderr, 1)
 
         # B14: Use backend container_env_vars if available
         env_vars = backend.container_env_vars() if backend else {"PYTHONPATH": "/project"}
@@ -214,14 +227,20 @@ def _run_with_apptainer(state: ModuleState, command: str, config: dict, func_log
             func_logger.info(f"Test failures detected in {runtime_name} container.")
         else:
             func_logger.info(f"{runtime_name} tests passed.")
-        return output
+        return (output, result.returncode)
     except subprocess.TimeoutExpired:
-        return f"ERROR: Command timed out ({timeout_s}s limit)."
+        return (f"ERROR: Command timed out ({timeout_s}s limit).", 1)
     except Exception as e:
-        return f"ERROR: {runtime_name} execution failed: {e}"
+        return (f"ERROR: {runtime_name} execution failed: {e}", 1)
 
 
-def _run_locally(state: ModuleState, command: str, config: dict, func_logger: logging.Logger, backend=None) -> str:
+def _run_locally(
+    state: ModuleState,
+    command: str,
+    config: dict,
+    func_logger: logging.Logger,
+    backend=None,
+) -> tuple[str, int]:
     """Runs a command in the local (host) environment, no container isolation."""
     try:
         worktree_path = state["worktree_path"]
@@ -253,18 +272,20 @@ def _run_locally(state: ModuleState, command: str, config: dict, func_logger: lo
             func_logger.info("Test failures detected in local environment.")
         else:
             func_logger.info("Local tests passed.")
-        return output
+        return (output, result.returncode)
     except subprocess.TimeoutExpired:
-        return f"ERROR: Command timed out ({timeout_s}s limit)."
+        return (f"ERROR: Command timed out ({timeout_s}s limit).", 1)
     except Exception as e:
-        return f"ERROR: Local execution failed: {e}"
+        return (f"ERROR: Local execution failed: {e}", 1)
 
 
-def _run_in_environment(state: ModuleState, command: str) -> str:
+def _run_in_environment(state: ModuleState, command: str) -> tuple[str, int]:
     """Helper to run a command in the configured environment (docker, apptainer, or local).
 
     Config key: settings.test_runner (values: auto, podman, docker, apptainer, singularity, local).
     Default: 'auto' — detects best available runtime (podman > docker > apptainer > singularity > local).
+
+    Returns: (combined stdout+stderr, process returncode).
     """
     config_path = state["config_path"]
     config = load_config(config_path)
@@ -329,8 +350,8 @@ def run_command_in_project_env(
     project_root: str,
     func_logger: logging.Logger,
     backend=None,
-) -> str:
-    """Helper to run a command in the configured environment against the whole project."""
+) -> tuple[str, int]:
+    """Helper to run a command in the configured environment against the whole project. Returns (output, returncode)."""
     state: ModuleState = {
         "worktree_path": project_root,
         "config_path": config_path,
@@ -441,9 +462,9 @@ def test_node(state: ModuleState) -> dict:
     func_logger = _get_func_logger(state)
     _write_worktree_files(state, func_logger)
 
-    logs = _run_in_environment(state, command)
+    logs, rc = _run_in_environment(state, command)
     func_logger.info("─── Test Results ───\n%s", logs)
-    return {"test_results": logs}
+    return {"test_results": logs, "test_returncode": rc}
 
 
 def linter_node(state: ModuleState) -> dict:
@@ -464,7 +485,7 @@ def linter_node(state: ModuleState) -> dict:
     func_logger = _get_func_logger(state)
     _write_worktree_files(state, func_logger)
 
-    logs = _run_in_environment(state, command)
+    logs, _ = _run_in_environment(state, command)
     func_logger.info("─── Lint Output ───\n%s", logs)
     return {"lint_results": logs}
 

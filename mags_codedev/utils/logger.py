@@ -9,10 +9,10 @@ Logger hierarchy:
 
     mags_codedev                          ← root logger
     ├── console (StreamHandler)           ← level follows verbosity flag
-    └── workflow.log (RotatingFileHandler)← 10 MB × 3 backups, level follows verbosity
+    └── workflow.log (RotatingFileHandler) ← no rotation — logs grow unbounded; level follows verbosity
 
     mags_codedev.func.<hash>              ← per-module logger (build)
-    └── logs/<hash>.log (RotatingFileHandler) ← 5 MB × 5 backups, propagate=True
+    └── logs/<hash>.log (RotatingFileHandler) ← no rotation — logs grow unbounded, propagate=True
 """
 import logging
 import os

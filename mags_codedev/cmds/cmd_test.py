@@ -49,13 +49,13 @@ def test(
     project_root = os.getcwd()
 
     with console.status("[bold green]Running tests...[/bold green]", spinner="dots"):
-        results = run_command_in_project_env(
+        results, rc = run_command_in_project_env(
             command, config_path, project_root, logger, test_backend
         )
 
     console.print(Panel(results, title="Test Results", border_style="blue"))
 
-    if "failed" in results.lower() or "error" in results.lower():
+    if rc != 0:
         console.print("[bold red]Some tests failed or errors occurred.[/bold red]")
         raise typer.Exit(code=1)
     else:

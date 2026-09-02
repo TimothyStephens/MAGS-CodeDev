@@ -218,6 +218,7 @@ async def process_module(
 
                 "test_results": "",
                 "lint_results": "",
+                "test_returncode": 0,
                 "test_error_summary": initial_error or "",
                 "review_comments": [],
                 "error_location": None,
@@ -349,7 +350,10 @@ async def process_module(
                 status_dict[module_location]["status"] = "Committing to Branch..."
                 repo = git.Repo(worktree_path)
                 relative_test_path_rel = os.path.relpath(test_output_path, worktree_path)
-                repo.index.add([spec['location'], relative_test_path_rel])
+                paths_to_add = [spec['location']]
+                if final_state.get('tests'):
+                    paths_to_add.append(relative_test_path_rel)
+                repo.index.add(paths_to_add)
                 repo.index.commit(
                     f"feat: Implement module '{module_location}' via MAGs-CodeDev"
                 )
@@ -430,7 +434,7 @@ async def process_module(
                 )
 
 
-def _run_single_module(target, spec, module_map, config_path, base_dir, log_level: str = "info", json_output: bool = False):
+def _run_single_module(target, spec, module_map, config_path, manifest_path: Path, base_dir, log_level: str = "info", json_output: bool = False):
     """Force-rebuild a single module via the graph with a live status tree.
 
     Used by ``build --module <location>`` to rerun one task after a manual fix
@@ -456,7 +460,7 @@ def _run_single_module(target, spec, module_map, config_path, base_dir, log_leve
     if not json_output:
         console.print(Panel(f"[bold magenta]Rebuilding module '{target}'...[/bold magenta]"))
     reporter = JsonStatusReporter(enabled=json_output)
-    reporter.build_start(str(config_path), 1, 0)
+    reporter.build_start(str(manifest_path), 1, 0)
     graph = build_function_graph()
     semaphore = asyncio.Semaphore(1)
     git_lock = asyncio.Lock()
@@ -603,7 +607,7 @@ def build(
                 f"Available: {', '.join(sorted(module_map)) or 'none'}[/red]"
             )
             raise typer.Exit(1)
-        _run_single_module(module, module_map[module], module_map, config_path, base_dir, log_level=log_level, json_output=json_output)
+        _run_single_module(module, module_map[module], module_map, config_path, manifest_path, base_dir, log_level=log_level, json_output=json_output)
         return
     built_modules = (
         set()
@@ -657,7 +661,7 @@ def build(
             }
 
         def done_count() -> int:
-            """Count modules that are finished, failed, or blocked."""
+            """Count modules that are finished or failed."""
             return len(built_modules) + len(failed_modules)
         semaphore = asyncio.Semaphore(max_parallel)
         git_lock = asyncio.Lock()
@@ -719,23 +723,34 @@ def build(
                     status_dict[loc]['status'] = f"Waiting: {', '.join(missing_deps)}"
                     status_dict[loc]['step'] = "Waiting"
 
-            # If nothing is buildable and nothing is waiting, we're stuck
             if not buildable_now:
-                console.print(generate_status_table(status_dict, module_map, base_dir=base_dir))
-                if remaining and not blocked:
-                    console.print(
-                        "\n[bold red]Error: Circular dependency or missing dependency detected.[/bold red]"
-                    )
-                    for loc, spec in remaining.items():
-                        missing_deps = [
-                            dep for dep in spec.get("dependencies", [])
-                            if dep not in built_modules
-                        ]
-                        if missing_deps:
-                            console.print(
-                                f"- [yellow]{loc}[/yellow] "
-                                f"(missing: {', '.join(missing_deps)})"
-                            )
+                blocked_count = len(blocked)
+                total_in = sum(info.get("tokens_in", 0) for info in status_dict.values())
+                total_out = sum(info.get("tokens_out", 0) for info in status_dict.values())
+                reporter.build_end(
+                    len(module_map), len(built_modules), len(failed_modules),
+                    blocked_count, total_in, total_out,
+                )
+                if not json_output:
+                    console.print(generate_status_table(status_dict, module_map, base_dir=base_dir))
+                    if remaining and not blocked:
+                        console.print(
+                            "\n[bold red]Error: Circular dependency or missing dependency detected.[/bold red]"
+                        )
+                        for loc, spec in remaining.items():
+                            missing_deps = [
+                                dep for dep in spec.get("dependencies", [])
+                                if dep not in built_modules
+                            ]
+                            if missing_deps:
+                                console.print(
+                                    f"- [yellow]{loc}[/yellow] (missing: {', '.join(missing_deps)})"
+                                )
+                    else:
+                        console.print(
+                            f"\n[bold red]Build stopped: {blocked_count} module(s) "
+                            f"blocked by failed dependencies.[/bold red]"
+                        )
                 raise typer.Exit(1)
 
 

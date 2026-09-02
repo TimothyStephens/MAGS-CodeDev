@@ -139,7 +139,7 @@ Edit `.mags-codedev/config.yaml`. Keys can also be set via environment variables
 mags-codedev build
 ```
 
-Builds modules in DAG dependency order (topological waves). Each module runs the agent loop in an isolated worktree + container. On success, commits to a `feature/<location>` branch and merges to `main`. Failed modules are reported with their log file path — independent modules in other waves still run.
+Builds modules in DAG dependency order (topological waves). Each module runs the agent loop in an isolated worktree + container. On success, commits to a `feature/<location>` branch and merges to the base branch (`main`, or `master` if that is the repo's primary). Failed modules are reported with their log file path — independent modules in other waves still run.
 
 | Flag | Description |
 |---|---|
@@ -178,7 +178,7 @@ mags-codedev build -v                         # debug (full LLM chat in logs)
 
 ### `mags-codedev test`
 
-Run project tests in the configured container environment.
+Run project tests in the configured environment (podman, docker, apptainer, or local).
 
 ```bash
 mags-codedev test
@@ -303,10 +303,13 @@ API keys and model config can be set via env vars (priority over YAML):
 | `OPENAI_API_KEY` | `api_keys.openai` |
 | `ANTHROPIC_API_KEY` | `api_keys.anthropic` |
 | `GOOGLE_API_KEY` | `api_keys.gemini` |
+| `MISTRAL_API_KEY` | `api_keys.mistral` |
+| `COHERE_API_KEY` | `api_keys.cohere` |
 | `OLLAMA_API_KEY` | `api_keys.ollama` |
 | `MAGS_MODEL` | Override model for all roles |
 | `MAGS_PROVIDER` | Override provider for all roles |
-| `MAGS_MODEL_CODER` | Override model for the coder role only |
+| `MAGS_BASE_URL` | Override base URL for all roles |
+| `MAGS_MODEL_<ROLE>` | Override model for a single role (coder, tester, log_checker, reviewers, chat) |
 
 ### Local Providers
 
@@ -363,7 +366,7 @@ session_start → coder → tester → run_tests → run_linters → log_checker
 ### LLM Reliability
 
 - **Transient errors** (rate limits, 503s, server disconnects) are retried with exponential backoff (5 attempts, 4–60s waits).
-- **Hard failures** (auth, quota) fail the task with a real, logged error — no silent stub fallbacks. A failed module's last good code is saved to the artifact DB for inspection.
+- **Hard failures** (auth, quota) fail the task with a real, logged error — no silent stub fallbacks (the log checker falls back to keyword analysis with a logged warning if its LLM call fails). A failed module's last good code is saved to the artifact DB for inspection.
 - **Reviewer quorum** — a skipped reviewer is neutral, not an approval. Approval requires `len(approvals) * 2 > len(reviewers)`. A partial API outage can never grant a 1-of-N approval.
 
 ### DAG Parallelism
@@ -416,7 +419,7 @@ When `mags-codedev build --json` is used, the CLI emits one JSON object per line
 {"ts":"...","event":"build_start","manifest":"manifest.json","total_modules":5,"already_built":2}
 {"ts":"...","event":"module_start","location":"src/pricing.py","hash":"a1b2...","session":1}
 {"ts":"...","event":"module_step","location":"src/pricing.py","step":"coder","iteration":1}
-{"ts":"...","event":"module_end","location":"src/pricing.py","status":"Success: Merged to Main","iterations":2,"log_file":".mags/logs/a1b2.log","tokens_in":4200,"tokens_out":1800}
+{"ts":"...","event":"module_end","location":"src/pricing.py","status":"Success: Merged to Main","iterations":2,"log_file":".mags-codedev/logs/a1b2.log","tokens_in":4200,"tokens_out":1800}
 {"ts":"...","event":"build_end","total_modules":5,"succeeded":4,"failed":1,"blocked":0,"tokens_in":45000,"tokens_out":12000}
 ```
 

@@ -107,3 +107,15 @@ class TestReviewerNode:
         assert result["status"] == "in_progress"
         assert len(result["review_comments"]) == 1, \
             "Skip must not be counted as an actionable comment"
+
+    def test_no_reviewers_configured_auto_accepts(self, sample_module_state):
+        """M5: no reviewers configured -> skip review and auto-approve (no 0/0 quorum loop)."""
+        state = sample_module_state
+        state["code"] = "def foo(): return 42"
+
+        with patch("mags_codedev.agents.reviewer.get_reviewer_llms", return_value=[]):
+            result = asyncio.run(multi_llm_review_node(state))
+
+        assert result["status"] == "success", \
+            f"No reviewers must auto-accept, got: {result}"
+        assert result["review_comments"] == []

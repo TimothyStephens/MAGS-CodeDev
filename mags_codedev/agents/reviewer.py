@@ -21,6 +21,7 @@ async def _get_review(llm, state: ModuleState) -> str:
     func_logger, resp_logger = get_dual_loggers(
         state.get("log_filepath"),
         base_dir=state.get("base_dir", ".mags-codedev"),
+        log_level=state.get("log_level", "info"),
     )
     session = state.get("_session_number", 1)
     system_prompt = (
@@ -143,7 +144,11 @@ async def multi_llm_review_node(state: ModuleState) -> dict:
     func_logger, _ = get_dual_loggers(
         state.get("log_filepath"),
         base_dir=state.get("base_dir", ".mags-codedev"),
+        log_level=state.get("log_level", "info"),
     )
+    if not llms:
+        func_logger.warning("No reviewers configured — skipping review (auto-accept).")
+        return {"review_comments": [], "status": "success"}
     reason = state.get("_next_reason", "")
     if reason:
         func_logger.info(f"[Reason] {reason}")

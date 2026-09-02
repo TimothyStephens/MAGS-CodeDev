@@ -154,7 +154,7 @@ def generate_status_table(status_dict: dict, module_map: Optional[dict] = None, 
 
 def _flat_table(status_dict: dict):
     """Fallback flat table when no dependency map is available."""
-    table = Table(title="Parallel Function Builder", show_header=True, header_style="bold cyan")
+    table = Table(title="Parallel Module Builder", show_header=True, header_style="bold cyan")
     table.add_column("Module", style="bold")
     table.add_column("Hash", style="dim", width=9)
     table.add_column("Status")

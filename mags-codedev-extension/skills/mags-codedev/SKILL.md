@@ -22,7 +22,7 @@ Multi-agent LLM code generation workflow using LangGraph. Initializes a workspac
 
 3. **`mags_test`** — Run pytest for all modules in the container environment.
 
-4. **`mags_debug`** — Pass an error trace to the LLM for automatic fixing. Accepts a log file path for auto-detection of the module. After debugging, use `mags_build --module <location>` to rerun the task.
+4. **`mags_debug`** — Pass an error trace or bug description to the LLM for automatic fixing. Accepts a log file path (auto-detects the module from its hash); when a module is resolved the full fix loop runs automatically, otherwise only the trace is analyzed — then rerun via `mags_build --module <location>`.
 
 5. **`mags_tokens`** — Show token usage by role and model.
 
@@ -47,7 +47,7 @@ Failed-task logs (`.mags-codedev/logs/<hash>.log`) contain the full LLM conversa
 
 ## LLM reliability
 
-- Hard LLM failures (auth, quota) fail the task with a real error — no silent stub fallbacks.
+- Hard LLM failures (auth, quota) fail the task with a real error — no silent stub fallbacks (the log checker falls back to keyword analysis with a logged warning if its LLM call fails).
 - Reviewer failures are neutral (skip = not a vote). Approval requires a strict majority of all configured reviewers.
 - Transient errors (rate limits, 503s) are retried with exponential backoff.
 

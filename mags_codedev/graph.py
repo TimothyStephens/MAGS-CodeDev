@@ -29,6 +29,14 @@ def evaluate_test_results(state: ModuleState) -> str:
         _log.info("[Route] Max test fix iterations (%d) reached.", max_iters)
         return "max_iterations_reached"
 
+    rc = state.get("test_returncode")
+    if rc is not None:
+        if rc != 0:
+            _log.info("[Route] Tests failed (exit code %d), sending to log checker.", rc)
+            return "tests_failed"
+        _log.info("[Route] Tests passed (exit code 0), proceeding to linting.")
+        return "tests_passed"
+
     backend = state.get("backend")
     failure_keywords = (
         backend.test_failure_keywords() if backend
@@ -121,9 +129,9 @@ def evaluate_reviews(state: ModuleState) -> str:
 
 
 def check_convergence(state: ModuleState) -> dict:
-    """Node: Check if code/tests have converged (identical to previous iteration).
+    """Node: Check if code/tests have converged (identical to the previous iteration).
 
-    If code hash matches previous_code_hash for 2+ consecutive iterations, mark as failed.
+    If the code hash matches previous_code_hash, mark as failed.
     Same check for test hash. Otherwise, update hashes for next comparison.
     """
     code = state.get("code", "")
